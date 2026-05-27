@@ -1,291 +1,221 @@
-# Restaurant Analysis Pipeline (Google Places + JSD, KDE, regression …)
+# Munich Restaurant Analysis Toolkit
 
-Collect restaurants from the Google Places API (New) over an arbitrary city,
-then run a suite of analyses against the resulting CSV: cuisine-level
-Jensen-Shannon divergence, geographic KDE maps, DBSCAN neighborhood discovery,
-Bayesian-shrunk rankings, name-token regression, and more.
+A Google Places (New) scraper plus a small suite of statistical and geographic
+analyses, run against ~2,200 restaurants in central Munich (~1,600 with more than
+100 reviews). Multi-city ready: `--city berlin|vienna|hamburg` or supply your own
+`--center` / `--side` / `--grid`.
 
-The project is one collector and several analysis tools joined by a CSV:
+---
 
-```
-munich_grid_scrape.py  →  {city}_restaurants.csv  →  divergence_pipeline.py    →  jsd_heatmap.png
-                                                  →  rating_2d_hist.py        →  popularity-vs-quality histogram
-                                                  →  outliers.py              →  cuisine-conditioned z-score tables
-                                                  →  map_html.py              →  interactive HTML map
-                                                  →  kde_quality_map.py       →  geographic quality heatmap
-                                                  →  price_cuisine_grid.py    →  price × cuisine contingency
-                                                  →  neighborhoods.py         →  DBSCAN clusters
-                                                  →  name_tokens.py           →  ridge regression on name tokens
-```
+## 1 — Adaptive grid scrape
 
-## Why it works this way
+![Scan coverage](munich_scan_coverage.png)
 
-The Google Places Nearby Search endpoint returns at most 20 results per call and
-offers no "minimum reviews" filter. You cannot ask it for "every Munich
-restaurant with 100+ reviews" in one query. So the scraper tiles the city into a
-grid of small circular searches, queries each, and deduplicates by `place_id`.
-Dense areas that would exceed the 20-result cap are detected and recursively
-subdivided (an adaptive mesh), so coverage stays complete without wasting calls
-on empty outskirts. The review-count filter is applied client-side after
-collection.
+A 5 km box around Marienplatz, tiled into 16 seed cells. Saturated cells (returning
+the API's 20-result cap) subdivide into four children of half the edge and re-query;
+this repeats up to `--max-depth`. The map above shows 1,623 places > 100 reviews,
+colored by average rating.
 
-## Requirements
+Resume is built in: `{city}_scanned_tiles.json` records tile hashes that are *fully
+scanned* (no missing results), `{city}_restaurants.csv` holds the dedup'd places.
+The CSV is written first (atomic tmp + `os.replace`), then the scanned-db, so a
+crash never marks a tile complete without its places on disk.
 
-The project uses `uv` for dependency management. From a clean checkout:
+---
 
-```
-uv sync
-```
+## 2 — Popularity vs quality
 
-That installs everything: `requests`, `numpy`, `scipy`, `matplotlib`, `prettytable`,
-`folium`, `contextily`, `pyproj`, `scikit-learn`.
+![2D histogram with marginals](munich_rating_2d_hist.png)
 
-A Google Maps Platform API key with the **Places API (New)** enabled and billing
-active on the project. The scraper calls the v1 `places:searchNearby` endpoint,
-which is the new API, not the legacy one.
+Joint distribution of review count (log x) and average rating (linear y), with
+marginal projections. Three top-10 tables print alongside the PNG:
 
-## Quick start
+- **By rating**, filtered to `reviews > 100` — the obvious "best"
+- **By review count** — popularity, dominated by beer halls
+- **By Bayesian-shrunk rating** — the IMDb-style formula
+  `WR = v/(v+m)·R + m/(v+m)·C`. Prior `C, m` are computed only on the
+  trustworthy subset (`reviews > 100`) so tiny-N rows don't pollute it.
 
-```bash
-# 1. See the grid and a call-count estimate without spending anything
-python munich_grid_scrape.py --dry-run
+The Bayesian list surfaces 4.9-rated places with ~1,500 reviews ahead of the 5.0s
+(which have too few reviews to shake the prior) and ahead of the 4.3-rated beer
+halls (whose huge N can't compensate for the lower point estimate).
 
-# 2. Run the real scrape with a safety cap on API calls
-export GOOGLE_MAPS_API_KEY="your_key_here"
-python munich_grid_scrape.py --max-calls 2000
+---
 
-# 3. Analyze the resulting CSV and produce the heatmap
-python divergence_pipeline.py
-```
+## 3 — Cuisine divergence
 
-## Common usage walkthrough
+![JSD heatmap](munich_jsd_heatmap.png)
 
-A start-to-finish path from a fresh machine to a full dataset. Each step de-risks
-the next, so you never point a large paid run at an untested setup.
+Pairwise Jensen-Shannon divergence between each cuisine's rating histogram (5
+half-star bins), with bootstrap 95% CIs from 1,000 within-cuisine resamples. The
+matrix is symmetric, so only the lower triangle is rendered.
 
-### 1. Set up the API
+- JSD = 0 ⇒ identical rating distributions
+- ~0.05 and below ⇒ effectively indistinguishable at our sample sizes (flagged
+  `(ns)` in the printed table when the CI lower bound is at or below 0.005)
+- 0.1–0.2 ⇒ clearly different shapes
 
-In the Google Cloud Console: create or select a project, enable billing on it
-(the Places API requires an active billing account even while you stay within the
-free tier), then enable the **Places API (New)** specifically. Create an API key
-under Credentials and restrict it to the Places API (New) so a leaked key cannot
-run up charges elsewhere. Then export it:
+A summary table prints after the PNG: 55 pairs sorted by JSD descending, with
+the CI and `(ns)` flag.
 
-```bash
-export GOOGLE_MAPS_API_KEY="your_key_here"
-pip install requests scipy numpy matplotlib
-```
+---
 
-### 2. Test that the key and endpoint work
+## 4 — Where's the good food?
 
-Before running the scraper, confirm the key, the enabled API, and the field mask
-with a single hand-made call. One call is effectively free and tells you
-immediately if auth or setup is wrong:
+![KDE quality map](munich_kde_map.png)
 
-```bash
-curl -s -X POST 'https://places.googleapis.com/v1/places:searchNearby' \
-  -H "Content-Type: application/json" \
-  -H "X-Goog-Api-Key: $GOOGLE_MAPS_API_KEY" \
-  -H "X-Goog-FieldMask: places.displayName,places.rating,places.userRatingCount" \
-  -d '{
-    "includedTypes": ["restaurant"],
-    "maxResultCount": 5,
-    "locationRestriction": {
-      "circle": {
-        "center": {"latitude": 48.1370339, "longitude": 11.5758134},
-        "radius": 500.0
-      }
-    }
-  }'
-```
+Two KDEs on an OSM basemap (CartoDB Positron), with per-pixel alpha proportional
+to signal magnitude so the basemap stays readable where the field is quiet:
 
-A JSON list of nearby restaurants means you are ready. A `403`/`PERMISSION_DENIED`
-usually means the Places API (New) is not enabled or the key restriction is wrong;
-a `400` usually means a malformed field mask.
+- **Left**: density of all restaurants — concentrated around the Altstadt and
+  along the main streets.
+- **Right**: density weighted by `(rating − mean) × log(reviews)`. The center
+  is *negative* (below-average quality despite high density) and the rings to
+  the south and west are *positive*. The classic tourist-trap geography.
 
-### 3. Dry run (no spend)
+`scipy.stats.gaussian_kde` rejects negative weights, so the signed field is
+computed as two non-negative KDEs (above-mean, below-mean) subtracted.
 
-See the grid and the call-count bracket without touching the API:
+---
 
-```bash
-python munich_grid_scrape.py --dry-run
-```
+## 5 — Price × cuisine
 
-This prints the floor (seed-grid count) and ceiling (full saturation) estimates
-and writes `munich_grid.json`. Use it to sanity-check `L`, `N`, and your intended
-`--max-calls` before spending anything.
+![Price × cuisine contingency](price_cuisine_grid.png)
 
-### 4. Small run WITHOUT adaptive mesh
+Pivot table of cuisine × price tier with the per-cell Bayesian-shrunk mean rating
+(prior `k=8` toward the global mean). Two practical takeaways:
 
-Do a first real-data pass with refinement disabled via `--max-depth 0`. This makes
-exactly one call per seed tile (16 for the defaults), so it is cheap, fast, and
-fully predictable (floor equals ceiling). It will undercount dense tiles and print
-`still saturated at max depth` warnings, which is expected and is in fact the
-signal that those tiles need refinement:
+- **Italian "inexpensive"** scores notably below Italian overall — cheap pizza
+  drags it down.
+- **`price_level` is missing on 35% of places.** Google appears to hide the price
+  tag on smaller / lower-traffic restaurants, and those places have *higher*
+  ratings on average — a real sampling story, not a bug. Surfaced as its own
+  column rather than dropped.
+
+---
+
+## 6 — Interactive map (HTML)
+
+`map_html.py` writes `munich_map.html` (not committed; ~1.3 MB). Per restaurant:
+
+- Color: red→yellow→green ramp on Bayesian-weighted rating, clamped to [4.0, 4.8]
+- Radius: `log10(reviews)` mapped to [4, 18] px
+- Hover for tooltip, click for popup (stays until closed)
+- Layer toggle per cuisine
+- `prefer_canvas=True` so 1.6k+ markers render as one canvas, not 1.6k DOM nodes
+
+Tooltip content runs through `html.escape()` plus explicit `` ` `` and `$`
+replacements — Folium emits tooltips inside JS template literals, and even one
+backtick in a restaurant name (e.g. "Tapas by Noah\`s") breaks the entire init
+script.
 
 ```bash
-python munich_grid_scrape.py --max-depth 0 --max-calls 50
-python divergence_pipeline.py            # confirm the CSV flows through cleanly
+uv run python map_html.py
+# then either open file://.../munich_map.html, or:
+python -m http.server 8765 && open http://localhost:8765/munich_map.html
 ```
 
-The point of this step is to validate the end-to-end plumbing (live API ->
-dedup -> CSV -> heatmap) on a tiny, known call count, not to get complete data.
+---
 
-### 5. Full run WITH adaptive mesh
+## 7 — Text-only stories
 
-Re-enable refinement (the default `--max-depth 4`), widen the box if you want
-greater Munich (for example `L = 12000` at the top of the file), and run with a
-budget cap as a backstop. The dense central tiles now subdivide to capture
-everything the 20-result cap would otherwise hide:
+These print to stdout (PrettyTable). No artifact to embed, but worth running.
+
+- `outliers.py` — per-cuisine z-score, scaled by `v/(v+m)` so tiny-N can't
+  dominate. Surfaces "most surprising for its kind" — e.g. the one 4.9 Bavarian
+  that beats its cohort's 4.4 average.
+- `name_tokens.py` — ridge regression of rating on tokenized restaurant names
+  (ASCII-folded, freq ≥ 10) + cuisine fixed effects, weighted by `log10(reviews)`.
+  Bootstrap CIs. Munich finds: `viktualienmarkt` (+0.20), `bar` (+0.09),
+  `pizza` (−0.25), `restaurant` (+0.06).
+- `neighborhoods.py` — DBSCAN on `(lat, lon)` projected to UTM zone 32N meters
+  with `eps=80 m`, `min_samples=10`. Per cluster: count, dominant cuisines,
+  modal price, mean rating. Pass `--geocode` to reverse-geocode each centroid
+  (~$0.10 worth of Geocoding API calls).
+
+---
+
+## Run
 
 ```bash
-# optionally edit munich_grid_scrape.py: set L = 12000
-python munich_grid_scrape.py --dry-run            # re-check the new estimate first
-python munich_grid_scrape.py --max-calls 2000     # the real, complete scrape
-python divergence_pipeline.py                     # final heatmap
+uv sync                                    # installs the scientific stack + folium
+export GOOGLE_MAPS_API_KEY="..."           # Places API (New) enabled on the project
+
+uv run python munich_grid_scrape.py --dry-run               # see the grid + call estimate
+uv run python munich_grid_scrape.py --max-calls 700         # scrape with a budget cap
+
+# Analyses (all free, all run against the CSV):
+uv run python rating_2d_hist.py
+uv run python divergence_pipeline.py
+uv run python kde_quality_map.py
+uv run python price_cuisine_grid.py
+uv run python outliers.py
+uv run python neighborhoods.py
+uv run python name_tokens.py
+uv run python scan_coverage.py
+uv run python map_html.py
 ```
 
-If the run finishes without a budget-cap message and without
-`still saturated at max depth` warnings, coverage is complete. If you see those
-warnings, raise `--max-depth` (or `N`) and re-run.
-
-## The scraper: `munich_grid_scrape.py`
-
-Builds an `N x N` grid over a square box of side `L` meters centered on a
-lat/lon, runs one Nearby Search per tile, subdivides saturated tiles, dedupes,
-filters by review count, and writes `munich_restaurants.csv`.
-
-Parameters live at the top of the file:
-
-- `CENTER_LAT`, `CENTER_LON`: grid center. Default is Marienplatz.
-- `L`: bounding-box side length in meters. Default 5000 (5 km). Raise this to
-  reach outer districts; roughly 12000 to 15000 covers greater Munich.
-- `N`: seed tiles per side. Default 4 (a 16-tile grid). Prefer letting the
-  adaptive mesh handle density rather than cranking `N`, since `N` multiplies the
-  baseline call count whether or not tiles are dense.
-- `MIN_REVIEWS`: keep only places with strictly more than this many reviews.
-  Default 100.
-- `MAX_DEPTH`: default adaptive-mesh subdivision depth. Default 4. Override per run
-  with `--max-depth`; `--max-depth 0` disables the mesh (one call per seed tile).
-- `SLEEP_BETWEEN`: spacing between calls in seconds. Raise it if you hit HTTP 429.
-
-Command-line flags:
-
-- `--dry-run`: preview the grid and print a floor/ceiling estimate of API calls,
-  then exit without making any calls or spending quota.
-- `--max-calls N`: hard stop. The budget is checked before every call, so the
-  scrape aborts the instant it would exceed `N`, saves whatever it has collected,
-  and labels the CSV as incomplete.
-- `--max-depth D`: adaptive-mesh depth for this run, overriding the `MAX_DEPTH`
-  default. `--max-depth 0` disables refinement (one call per seed tile).
-- `--city {munich,berlin,vienna,hamburg}`: preset city center; also defaults
-  `--csv` and `--scanned-db` to `{city}_restaurants.csv` and
-  `{city}_scanned_tiles.json`.
-- `--center "LAT,LON"`, `--side METERS`, `--grid N`: manual center, box edge,
-  and tiles-per-side overrides.
-- `--csv PATH`, `--scanned-db PATH`, `--no-resume`: control resume.
-
-**Resume mechanism.** The scraper persists two pieces of state: the CSV (all
-deduped places) and a JSON of fully-scanned tile hashes (`{city}_scanned_tiles.json`).
-Tile hashes are derived from `(lat, lon, edge)` rounded to dodge float drift.
-On startup it reads both back, and `harvest()` skips any tile whose hash is in
-the scanned set. A tile is marked scanned only when truly complete: non-saturated
-leaves, plus saturated nodes whose four children all completed. Saturated-at-max-depth
-and HTTP-error tiles are never marked, so they retry next run. Writes are atomic
-(tmp + `os.replace`) and ordered CSV-first so a crash never leaves the scanned-db
-ahead of the data.
-
-How the adaptive mesh works: a cell is described by its center and edge length.
-If a query returns a full page (20 results) the cell almost certainly holds more
-than the API will return, so it splits into four children of half the edge and
-each is re-queried. This repeats until cells come back under the cap or
-`MAX_DEPTH` is hit. Search radius for a cell is its half-diagonal, so circles
-fully cover their square cells with slight overlap that dedup absorbs.
-
-Output CSV columns: `place_id, name, rating, user_rating_count, lat, lon, types,
-price_level`.
-
-## The analysis: `divergence_pipeline.py`
-
-Reads the CSV, classifies each restaurant into a cuisine, builds a rating
-distribution per cuisine, computes pairwise divergence, and writes the heatmap.
+Multi-city:
 
 ```bash
-python divergence_pipeline.py [input_csv] [output_png]
-# defaults: munich_restaurants.csv  ->  munich_jsd_heatmap.png
+uv run python munich_grid_scrape.py --city berlin --max-calls 700
+uv run python munich_grid_scrape.py --center 48.137,11.576 --side 8000 --grid 8
 ```
 
-Key choices:
+---
 
-- **Cuisine classification** maps Google `types` to a label using priority-ordered
-  rules, so specific types win over broad ones. A place tagged
-  `japanese_restaurant|sushi_restaurant|asian_restaurant` becomes Japanese, not
-  Asian. Unclassifiable places are counted and dropped, not silently discarded.
-- **Distributions** are histograms over half-star rating bands (3.5 to 5.0) with
-  Laplace smoothing (+0.5 per bin) so no bin is exactly zero. Cuisines with fewer
-  than 3 places are dropped so distributions are not built on noise.
-- **Jensen-Shannon over KL**: JS is symmetric (clean distance-like matrix) and
-  stays finite even when a rating band is empty, which KL does not. The code
-  squares SciPy's JS distance to report divergence.
+## Cost and quota
 
-The rating bins were tuned for a small sample spanning 3.5 to 5.0. On a fuller,
-denser dataset you will likely want to widen them; see the open items below.
+The field mask requests `id, displayName, rating, userRatingCount, location, types,
+priceLevel`, which puts the call in the **Nearby Search Enterprise** SKU. Pricing
+(verified 2026-05):
 
-## Cost and the free tier
+- $35 / 1,000 calls after the free monthly quota
+- Free quota: **1,000 calls per month** for this SKU (no more universal $200 credit
+  since Google's March 2025 pricing change)
 
-Google replaced its old universal $200 monthly credit (as of March 2025) with
-per-SKU free monthly usage caps under Essentials / Pro / Enterprise tiers. The
-field mask in this scraper requests location, rating, review count, types, and
-price level, which puts Nearby Search in the **Pro** tier. You are billed at the
-highest tier your requested fields touch. The Pro free cap is on the order of a
-few thousand calls per month.
+A full 5 km Munich scrape lands around 500–700 calls (resume helps subsequent runs),
+which fits inside the free tier on a quiet month. Set a budget alert in GCP; for a
+hard cap, lower `SearchNearbyRequestPerDayPerProject` via the Cloud Quotas API.
 
-A one-off 5 km Munich run will likely make only a few hundred calls and stay free,
-but a larger box or repeated runs in the same month can cross into paid usage.
-Exact dollar rates change, so verify current numbers on Google's pricing page
-before a big run, and set a billing budget alert plus a daily quota cap on the key
-in the Cloud Console. The `--dry-run` and `--max-calls` flags are your in-script
-guardrails on top of that.
+---
 
-## Files
+## File map
 
-Collector:
-- `munich_grid_scrape.py` — scraper with adaptive mesh, multi-city CLI, atomic resume.
+```
+munich_grid_scrape.py     # scraper (multi-city CLI, atomic resume)
+divergence_pipeline.py    # JSD heatmap + bootstrap CIs + summary table
+rating_2d_hist.py         # 2D histogram + 3 top-10 rankings
+outliers.py               # cuisine-conditioned z-scores
+map_html.py               # Folium interactive map
+kde_quality_map.py        # geographic quality heatmap
+price_cuisine_grid.py     # price × cuisine contingency
+neighborhoods.py          # DBSCAN clusters
+name_tokens.py            # name-token regression
+scan_coverage.py          # coverage PNG (this README's first image)
+```
 
-Pipelines (each runs over an existing CSV, no API spend):
-- `divergence_pipeline.py` — cuisine JSD heatmap + bootstrap 95% CIs.
-- `rating_2d_hist.py` — review-count × rating 2D histogram with marginals
-  and three top-10 tables (rating / reviews / Bayesian-shrunk).
-- `outliers.py` — z-score within cuisine, surfaces most surprising places for their kind.
-- `map_html.py` — Folium interactive HTML map (open in any browser).
-- `kde_quality_map.py` — KDE quality heatmap on an OSM basemap.
-- `price_cuisine_grid.py` — price × cuisine contingency with Bayesian-shrunk means.
-- `neighborhoods.py` — DBSCAN restaurant clusters; optional `--geocode` for names.
-- `name_tokens.py` — ridge regression of rating on name tokens + cuisine FE.
+Generated artifacts (gitignored: `*_grid.json`, `*_restaurants.csv`,
+`*_scanned_tiles.json`, `*.html`):
 
-Generated artifacts (all gitignored):
-- `{city}_restaurants.csv` — shared data contract.
-- `{city}_scanned_tiles.json` — resume index.
-- `{city}_grid.json` — preview of the seed grid (dry-run also writes this).
-- `munich_jsd_heatmap.png`, `munich_rating_2d_hist.png`, `munich_kde_map.png`,
-  `price_cuisine_grid.png`, `munich_map.html` — analysis outputs.
+```
+{city}_grid.json          # dry-run preview of the seed grid
+{city}_restaurants.csv    # scraped data (resume input + output)
+{city}_scanned_tiles.json # tile-hash index for resume
+munich_map.html           # interactive Folium map
+```
 
-## Important caveats
+---
 
-- **The 100+ review threshold is client-side**, applied after collection,
-  because the API has no minimum-reviews parameter.
-- **`MIN_REVIEWS` boundary is strict `>` everywhere** (a place with exactly
-  100 reviews is dropped). Constants in `munich_grid_scrape.py`,
-  `divergence_pipeline.py`, and `rating_2d_hist.py` all match.
-- **The CSV is no longer pre-filtered.** Since resume landed, the scraper
-  persists all deduped places; downstream tools apply their own `MIN_REVIEWS`
-  gate. This means `rating_2d_hist.py` may see sub-100-review rows, but its
-  `X_LO=100` clip hides them from the displayed histogram window.
+## Caveats
 
-## Possible next steps
-
-- Auto-adapt the rating bin edges to the data range for larger datasets.
-- Add a price-level JSD variant alongside the rating JSD.
-- Wider DBSCAN parameter sweep + reverse-geocode all clusters with `--geocode`.
-- Multi-city comparison plots (panel facets over Munich/Berlin/Vienna/Hamburg).
-- Per-cuisine outlier maps (highlight surprises geographically).
+- **No per-star review counts.** Google's Places API doesn't expose them; it
+  returns only the average rating and total review count. JSD here operates on
+  the *cuisine-level* histogram of per-place averages, not on per-review stars.
+- **`MIN_REVIEWS = 100` is strict (`>`)** in every script. Places with exactly
+  100 reviews are dropped.
+- **The CSV is no longer pre-filtered.** Since resume landed, the scraper persists
+  all dedup'd places; downstream tools apply their own `MIN_REVIEWS` gate.
+  `rating_2d_hist.py` still clips visually to `X_LO = 100`, so the displayed
+  histogram looks the same as it did before resume.
