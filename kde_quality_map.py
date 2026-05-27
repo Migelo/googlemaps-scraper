@@ -22,6 +22,7 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 from scipy.stats import gaussian_kde
 from pyproj import Transformer
 import contextily as cx
@@ -109,26 +110,48 @@ def plot(rows, out_png):
 
     fig, axes = plt.subplots(1, 2, figsize=(15, 7), sharex=True, sharey=True)
 
-    for ax, field, title, cmap, kwargs in [
-        (axes[0], A, "Restaurant density", "magma_r", dict()),
+    panels = [
+        # (axes, field, title, cmap_name, vmin, vmax, "sequential"|"diverging")
+        (axes[0], A, "Restaurant density", "magma_r",
+         None, None, "sequential"),
         (axes[1], B, "Quality density (rating − mean, ×log reviews)", "RdBu_r",
-         dict(vmin=-B_abs_max, vmax=B_abs_max)),
-    ]:
+         -B_abs_max, B_abs_max, "diverging"),
+    ]
+
+    for ax, field, title, cmap_name, vmin, vmax, mode in panels:
         # Basemap first so the KDE field sits on top of it (and behind the scatter).
         ax.set_xlim(extent[0], extent[1])
         ax.set_ylim(extent[2], extent[3])
         cx.add_basemap(ax, crs="EPSG:3857", source=cx.providers.CartoDB.PositronNoLabels,
                        attribution_size=6, zoom=14)
-        im = ax.imshow(
-            field, origin="lower", extent=extent, cmap=cmap, alpha=0.65,
-            zorder=2, **kwargs,
-        )
+
+        # Build an RGBA image with per-pixel alpha proportional to signal
+        # magnitude, so the basemap stays visible where the KDE has nothing
+        # interesting to say and only the actual signal hides it.
+        cmap = matplotlib.colormaps[cmap_name]
+        if mode == "sequential":
+            norm = mcolors.Normalize(vmin=field.min(), vmax=field.max())
+            magnitude = norm(field)                       # 0 (transparent) → 1 (opaque)
+        else:
+            norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
+            magnitude = np.abs(field) / max(abs(vmin), abs(vmax), 1e-12)
+        rgba = cmap(norm(field))
+        # gamma 0.6 makes mid-range magnitudes already quite visible while
+        # keeping the bottom 10% essentially transparent.
+        rgba[..., 3] = np.clip(magnitude ** 0.6 * 0.80, 0, 0.80)
+
+        ax.imshow(rgba, origin="lower", extent=extent, zorder=2)
         ax.scatter(xs, ys, s=5, color="white", edgecolor="black",
                    linewidths=0.3, alpha=0.7, zorder=3)
         ax.set_title(title, fontsize=11)
         ax.set_xticks([])
         ax.set_yticks([])
-        fig.colorbar(im, ax=ax, fraction=0.04, pad=0.02)
+
+        # The image we drew has bespoke alpha, so the colorbar needs a separate
+        # ScalarMappable to expose the colormap+norm without inheriting alpha.
+        sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+        sm.set_array([])
+        fig.colorbar(sm, ax=ax, fraction=0.04, pad=0.02)
 
     fig.suptitle(f"Munich: where is the good food?  (n={len(rows)}, > {MIN_REVIEWS} reviews)",
                  fontsize=12)
