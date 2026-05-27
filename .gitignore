@@ -14,9 +14,9 @@ __pycache__/
 .env.*
 
 # Scraper / pipeline outputs
-munich_grid.json
-munich_restaurants.csv
-scanned_tiles.json
+*_grid.json
+*_restaurants.csv
+*_scanned_tiles.json
 *.html
 
 # Editor / OS
