@@ -129,7 +129,9 @@ def build_map(rows, grid_path=None):
             radius=radius_from_reviews(r["reviews"]),
             color=rating_to_color(r["bayes"]),
             weight=1, fill=True, fill_opacity=0.75,
+            # Tooltip = on-hover preview, popup = click-to-pin persistent panel.
             tooltip=folium.Tooltip(tooltip, sticky=True),
+            popup=folium.Popup(tooltip, max_width=300),
         ).add_to(groups[r["cuisine"]])
 
     for g in groups.values():
