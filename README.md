@@ -1,15 +1,21 @@
-# Munich Restaurant Rating-Divergence Pipeline
+# Restaurant Analysis Pipeline (Google Places + JSD, KDE, regression …)
 
-Collect Munich restaurants from the Google Places API, group them by cuisine,
-and measure how different each cuisine's star-rating distribution is from the
-others using Jensen-Shannon divergence. The output is a pairwise divergence
-heatmap.
+Collect restaurants from the Google Places API (New) over an arbitrary city,
+then run a suite of analyses against the resulting CSV: cuisine-level
+Jensen-Shannon divergence, geographic KDE maps, DBSCAN neighborhood discovery,
+Bayesian-shrunk rankings, name-token regression, and more.
 
-The project is two stages joined by a CSV:
+The project is one collector and several analysis tools joined by a CSV:
 
 ```
-munich_grid_scrape.py  ->  munich_restaurants.csv  ->  divergence_pipeline.py  ->  munich_jsd_heatmap.png
-   (collect)                  (shared contract)            (analyze + plot)
+munich_grid_scrape.py  →  {city}_restaurants.csv  →  divergence_pipeline.py    →  jsd_heatmap.png
+                                                  →  rating_2d_hist.py        →  popularity-vs-quality histogram
+                                                  →  outliers.py              →  cuisine-conditioned z-score tables
+                                                  →  map_html.py              →  interactive HTML map
+                                                  →  kde_quality_map.py       →  geographic quality heatmap
+                                                  →  price_cuisine_grid.py    →  price × cuisine contingency
+                                                  →  neighborhoods.py         →  DBSCAN clusters
+                                                  →  name_tokens.py           →  ridge regression on name tokens
 ```
 
 ## Why it works this way
@@ -25,9 +31,14 @@ collection.
 
 ## Requirements
 
+The project uses `uv` for dependency management. From a clean checkout:
+
 ```
-pip install requests scipy numpy matplotlib
+uv sync
 ```
+
+That installs everything: `requests`, `numpy`, `scipy`, `matplotlib`, `prettytable`,
+`folium`, `contextily`, `pyproj`, `scikit-learn`.
 
 A Google Maps Platform API key with the **Places API (New)** enabled and billing
 active on the project. The scraper calls the v1 `places:searchNearby` endpoint,
@@ -167,6 +178,22 @@ Command-line flags:
   and labels the CSV as incomplete.
 - `--max-depth D`: adaptive-mesh depth for this run, overriding the `MAX_DEPTH`
   default. `--max-depth 0` disables refinement (one call per seed tile).
+- `--city {munich,berlin,vienna,hamburg}`: preset city center; also defaults
+  `--csv` and `--scanned-db` to `{city}_restaurants.csv` and
+  `{city}_scanned_tiles.json`.
+- `--center "LAT,LON"`, `--side METERS`, `--grid N`: manual center, box edge,
+  and tiles-per-side overrides.
+- `--csv PATH`, `--scanned-db PATH`, `--no-resume`: control resume.
+
+**Resume mechanism.** The scraper persists two pieces of state: the CSV (all
+deduped places) and a JSON of fully-scanned tile hashes (`{city}_scanned_tiles.json`).
+Tile hashes are derived from `(lat, lon, edge)` rounded to dodge float drift.
+On startup it reads both back, and `harvest()` skips any tile whose hash is in
+the scanned set. A tile is marked scanned only when truly complete: non-saturated
+leaves, plus saturated nodes whose four children all completed. Saturated-at-max-depth
+and HTTP-error tiles are never marked, so they retry next run. Writes are atomic
+(tmp + `os.replace`) and ordered CSV-first so a crash never leaves the scanned-db
+ahead of the data.
 
 How the adaptive mesh works: a cell is described by its center and edge length.
 If a query returns a full page (20 results) the cell almost certainly holds more
@@ -222,33 +249,43 @@ guardrails on top of that.
 
 ## Files
 
-- `munich_grid_scrape.py` - the scraper (grid, adaptive mesh, dry-run, budget cap).
-- `divergence_pipeline.py` - cuisine classification, divergence, heatmap.
-- `make_sample_csv.py` - builds a `munich_restaurants.csv` from a real 60-restaurant
-  sample collected earlier, so the analysis stage can be demonstrated without a
-  live key. See the note below.
-- `munich_restaurants.csv` - the shared data contract between the two stages.
-- `munich_jsd_heatmap.png` - the final output.
+Collector:
+- `munich_grid_scrape.py` — scraper with adaptive mesh, multi-city CLI, atomic resume.
+
+Pipelines (each runs over an existing CSV, no API spend):
+- `divergence_pipeline.py` — cuisine JSD heatmap + bootstrap 95% CIs.
+- `rating_2d_hist.py` — review-count × rating 2D histogram with marginals
+  and three top-10 tables (rating / reviews / Bayesian-shrunk).
+- `outliers.py` — z-score within cuisine, surfaces most surprising places for their kind.
+- `map_html.py` — Folium interactive HTML map (open in any browser).
+- `kde_quality_map.py` — KDE quality heatmap on an OSM basemap.
+- `price_cuisine_grid.py` — price × cuisine contingency with Bayesian-shrunk means.
+- `neighborhoods.py` — DBSCAN restaurant clusters; optional `--geocode` for names.
+- `name_tokens.py` — ridge regression of rating on name tokens + cuisine FE.
+
+Generated artifacts (all gitignored):
+- `{city}_restaurants.csv` — shared data contract.
+- `{city}_scanned_tiles.json` — resume index.
+- `{city}_grid.json` — preview of the seed grid (dry-run also writes this).
+- `munich_jsd_heatmap.png`, `munich_rating_2d_hist.png`, `munich_kde_map.png`,
+  `price_cuisine_grid.png`, `munich_map.html` — analysis outputs.
 
 ## Important caveats
 
-- **The included heatmap is from a sample, not a full scrape.** The sample CSV was
-  assembled from ~60 real Munich restaurants collected through a separate tool, not
-  by running the scraper against Google. The collection geometry, adaptive
-  subdivision, dedup, and budget logic are all tested offline (including a
-  simulation with a synthetic 1,500-point density field), but the live HTTP round
-  trip to Google has not been exercised. On your first real run, confirm the auth
-  header, the response shape, and that the field mask bills as described.
-- **A capped run is partial and not resumable.** Re-running after a `--max-calls`
-  abort is safe (dedup absorbs overlap) but starts over from the first tile rather
-  than resuming, re-spending calls on already-covered tiles. Fine for a one-off;
-  for repeated or very large runs, persist the seen-set and tile frontier first.
-- **The 100+ review threshold is client-side**, applied after collection, because
-  the API has no minimum-reviews parameter.
+- **The 100+ review threshold is client-side**, applied after collection,
+  because the API has no minimum-reviews parameter.
+- **`MIN_REVIEWS` boundary is strict `>` everywhere** (a place with exactly
+  100 reviews is dropped). Constants in `munich_grid_scrape.py`,
+  `divergence_pipeline.py`, and `rating_2d_hist.py` all match.
+- **The CSV is no longer pre-filtered.** Since resume landed, the scraper
+  persists all deduped places; downstream tools apply their own `MIN_REVIEWS`
+  gate. This means `rating_2d_hist.py` may see sub-100-review rows, but its
+  `X_LO=100` clip hides them from the displayed histogram window.
 
 ## Possible next steps
 
 - Auto-adapt the rating bin edges to the data range for larger datasets.
-- Add a price-level divergence variant as a second output.
-- Add a resumable checkpoint (persist seen-set and frontier) for large runs.
-- Add a category-faceting second pass to catch places the grid misses.
+- Add a price-level JSD variant alongside the rating JSD.
+- Wider DBSCAN parameter sweep + reverse-geocode all clusters with `--geocode`.
+- Multi-city comparison plots (panel facets over Munich/Berlin/Vienna/Hamburg).
+- Per-cuisine outlier maps (highlight surprises geographically).
