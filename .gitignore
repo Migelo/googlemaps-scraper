@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# uv / virtualenv
+.venv/
+
+# Environment / secrets
+.env
+.env.*
+
+# Scraper outputs
+munich_grid.json
+munich_restaurants.csv
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
