@@ -18,9 +18,9 @@ import csv
 import json
 import math
 import os
+import html
 
 import folium
-from folium.plugins import MarkerCluster
 
 from divergence_pipeline import classify, MIN_REVIEWS
 
@@ -96,9 +96,13 @@ def radius_from_reviews(reviews, lo=4, hi=18):
 
 
 def build_map(rows, grid_path=None):
+    # prefer_canvas: render 1k+ markers as one canvas element instead of one
+    # SVG node per circle. Leaflet's SVG renderer chokes well before 2k markers
+    # — pages can appear blank or hang. Canvas keeps it interactive at this size.
     m = folium.Map(
         location=[CENTER_LAT, CENTER_LON], zoom_start=ZOOM_START,
         tiles="cartodbpositron", control_scale=True,
+        prefer_canvas=True,
     )
 
     # One FeatureGroup per cuisine so the LayerControl can toggle them.
@@ -106,12 +110,19 @@ def build_map(rows, grid_path=None):
     groups = {c: folium.FeatureGroup(name=c, show=True) for c in cuisines}
 
     for r in rows:
+        # html.escape() handles <, >, &; backticks must also be neutralized
+        # because Folium emits tooltips inside JS template literals, and a
+        # literal backtick in a name (e.g. "Tapas by Noah`s") closes the
+        # literal mid-string and breaks every subsequent script statement.
+        # $ likewise needs escaping so "${" can't trigger interpolation.
+        def safe(s):
+            return html.escape(str(s)).replace("`", "&#96;").replace("$", "&#36;")
         tooltip = (
-            f"<b>{r['name']}</b><br>"
-            f"cuisine: {r['cuisine']}<br>"
+            f"<b>{safe(r['name'])}</b><br>"
+            f"cuisine: {safe(r['cuisine'])}<br>"
             f"rating: {r['rating']:.1f}  (Bayes {r['bayes']:.2f})<br>"
             f"reviews: {r['reviews']:,}<br>"
-            f"price: {r['price']}"
+            f"price: {safe(r['price'])}"
         )
         folium.CircleMarker(
             location=[r["lat"], r["lon"]],
