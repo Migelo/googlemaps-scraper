@@ -156,32 +156,45 @@ def bootstrap_jsd(rows, cuisines, n_boot=1000, rng=None):
 
 
 def plot(M, cuisines, out_png, n_places, M_lo=None, M_hi=None):
-    """Heatmap of JSD with optional CI annotations.
+    """Heatmap of JSD (lower triangle only) with optional CI annotations.
 
-    With bootstrap CIs, each cell shows `mean ± half_width` and a CI crossing
-    zero (or near-zero JSD lower bound) gets a small marker — those pairs are
-    statistically indistinguishable.
+    JSD is symmetric, so we render only the lower triangle (i >= j) — the
+    upper triangle is masked and rendered transparent, eliminating the
+    redundant copy. Diagonal entries are always 0 by definition; we keep
+    them so the cuisine labels stay aligned.
     """
     n = len(cuisines)
     fig, ax = plt.subplots(figsize=(max(7.5, 1.1 * n + 2.5), max(6, n + 2)))
-    im = ax.imshow(M, cmap="magma_r")
+
+    # Mask the strict upper triangle (j > i) so it doesn't render.
+    mask = np.triu(np.ones((n, n), dtype=bool), k=1)
+    M_disp = np.ma.array(M, mask=mask)
+    cmap = plt.get_cmap("magma_r").copy()
+    cmap.set_bad(color="white", alpha=0.0)
+
+    im = ax.imshow(M_disp, cmap=cmap)
     ax.set_xticks(range(n)); ax.set_yticks(range(n))
     ax.set_xticklabels(cuisines, rotation=45, ha="right")
     ax.set_yticklabels(cuisines)
+    # Hide the now-empty top/right spines.
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    vmax = float(M_disp.max())  # for picking text contrast on the visible cells
     for i in range(n):
-        for j in range(n):
+        for j in range(i + 1):  # lower triangle including diagonal
             v = M[i, j]
             label = f"{v:.3f}"
-            if M_lo is not None:
+            if M_lo is not None and i != j:
                 half = (M_hi[i, j] - M_lo[i, j]) / 2
                 label = f"{v:.3f}\n±{half:.3f}"
                 # Mark cells whose CI lower bound is below 0.005 — pairs of
                 # JSDs that small (with smoothing) are effectively zero, so
                 # we can't reject "same distribution" at 95%.
-                if M_lo[i, j] <= 0.005 and i != j:
+                if M_lo[i, j] <= 0.005:
                     label += "\n(ns)"
             ax.text(j, i, label, ha="center", va="center",
-                    color="white" if v > M.max() * 0.55 else "black", fontsize=8)
+                    color="white" if v > vmax * 0.55 else "black", fontsize=8)
     cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     cbar.set_label("Jensen-Shannon divergence (base 2)", fontsize=10)
     subtitle = (
