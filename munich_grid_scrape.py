@@ -32,8 +32,9 @@ class CallBudgetExceeded(Exception):
 
 
 # ----------------------------- Parameters -----------------------------------
-CENTER_LAT = 48.1370339      # Marienplatz
-CENTER_LON = 11.5758134
+# Default center is Munich Marienplatz; override with --center or --city.
+DEFAULT_CENTER_LAT = 48.1370339
+DEFAULT_CENTER_LON = 11.5758134
 L = 5000.0                   # bounding-box side length in meters (default 5 km)
 N = 4                        # tiles per side (default 4 -> 16 tiles)
 MIN_REVIEWS = 100            # client-side filter (API has no min-reviews param)
@@ -43,10 +44,22 @@ SLEEP_BETWEEN = 0.2          # politeness / rate-limit spacing in seconds
 MAX_DEPTH = 4                # recursion cap: a tile splits at most this many times
 SPLIT_AT = MAX_PER_CALL      # a tile returning >= this many results subdivides
 
-# Meters-per-degree conversions. Latitude is ~constant; longitude scales by
-# cos(latitude) because meridians converge toward the poles.
+# Meters-per-degree latitude is ~constant (Earth's circumference / 360).
 M_PER_DEG_LAT = 111_320.0
-M_PER_DEG_LON = 111_320.0 * math.cos(math.radians(CENTER_LAT))
+
+
+def m_per_deg_lon(lat):
+    """Meters per degree of longitude at the given latitude."""
+    return 111_320.0 * math.cos(math.radians(lat))
+
+
+# Preset city centers — values are (lat, lon) of a central square / landmark.
+CITIES = {
+    "munich":  (48.1370339, 11.5758134),    # Marienplatz
+    "berlin":  (52.5200,    13.4050),       # Alexanderplatz
+    "vienna":  (48.2082,    16.3738),       # Stephansdom
+    "hamburg": (53.5511,     9.9937),       # Rathausmarkt
+}
 
 
 def cell_radius(edge_m):
@@ -65,6 +78,7 @@ def build_grid(center_lat, center_lon, side_m, n):
     """
     edge_m = side_m / n
     half = side_m / 2.0
+    m_per_deg_lon_center = m_per_deg_lon(center_lat)
 
     cells = []
     for row in range(n):
@@ -73,7 +87,7 @@ def build_grid(center_lat, center_lon, side_m, n):
             dx = -half + edge_m * (col + 0.5)   # east-west
             dy = -half + edge_m * (row + 0.5)   # north-south
             lat = center_lat + dy / M_PER_DEG_LAT
-            lon = center_lon + dx / M_PER_DEG_LON
+            lon = center_lon + dx / m_per_deg_lon_center
             cells.append((lat, lon, edge_m))
     return cells
 
@@ -86,11 +100,12 @@ def subdivide(lat, lon, edge_m):
     """
     child_edge = edge_m / 2.0
     q = edge_m / 4.0  # quarter-edge offset to each child center
+    m_lon = m_per_deg_lon(lat)
     children = []
     for sy in (-1, 1):
         for sx in (-1, 1):
             clat = lat + (sy * q) / M_PER_DEG_LAT
-            clon = lon + (sx * q) / M_PER_DEG_LON
+            clon = lon + (sx * q) / m_lon
             children.append((clat, clon, child_edge))
     return children
 
@@ -278,7 +293,7 @@ def estimate_calls(n_seed, max_depth):
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Munich Places grid scraper")
+    p = argparse.ArgumentParser(description="Places (New) grid scraper")
     p.add_argument("--dry-run", action="store_true",
                    help="estimate calls and preview the grid without spending quota")
     p.add_argument("--max-calls", type=int, default=None,
@@ -286,26 +301,67 @@ def parse_args():
     p.add_argument("--max-depth", type=int, default=MAX_DEPTH,
                    help=f"adaptive-mesh subdivision depth (default {MAX_DEPTH}; "
                         f"0 disables refinement)")
-    p.add_argument("--csv", default="munich_restaurants.csv",
-                   help="CSV output file; also read at startup for resume")
-    p.add_argument("--scanned-db", default="scanned_tiles.json",
-                   help="JSON file tracking fully-scanned tile hashes (resume index)")
+    p.add_argument("--city", choices=sorted(CITIES.keys()), default=None,
+                   help="preset city center; also defaults --csv and --scanned-db "
+                        "to {city}_restaurants.csv / {city}_scanned_tiles.json")
+    p.add_argument("--center", default=None,
+                   help='manual center as "LAT,LON" (overrides --city)')
+    p.add_argument("--side", type=float, default=L,
+                   help=f"bounding-box side length in meters (default {int(L)})")
+    p.add_argument("--grid", type=int, default=N,
+                   help=f"tiles per side (default {N})")
+    p.add_argument("--csv", default=None,
+                   help="CSV output file (default depends on --city)")
+    p.add_argument("--scanned-db", default=None,
+                   help="JSON file tracking scanned tile hashes (default depends on --city)")
     p.add_argument("--no-resume", action="store_true",
                    help="ignore existing CSV/scanned-db and start fresh")
-    return p.parse_args()
+    args = p.parse_args()
+
+    # Resolve center: --center > --city > default Munich.
+    if args.center:
+        try:
+            lat, lon = (float(x) for x in args.center.split(","))
+        except ValueError:
+            p.error("--center must be 'LAT,LON'")
+        args.center_lat, args.center_lon = lat, lon
+        slug = "custom"
+    elif args.city:
+        args.center_lat, args.center_lon = CITIES[args.city]
+        slug = args.city
+    else:
+        args.center_lat, args.center_lon = DEFAULT_CENTER_LAT, DEFAULT_CENTER_LON
+        slug = "munich"
+
+    # Default output paths from the slug. munich keeps its legacy filenames so
+    # the existing CSV is picked up automatically.
+    if args.csv is None:
+        args.csv = "munich_restaurants.csv" if slug == "munich" else f"{slug}_restaurants.csv"
+    if args.scanned_db is None:
+        args.scanned_db = (
+            "scanned_tiles.json" if slug == "munich" else f"{slug}_scanned_tiles.json"
+        )
+    return args
 
 
 def main():
     args = parse_args()
     api_key = os.environ.get("GOOGLE_MAPS_API_KEY")
-    tiles = build_grid(CENTER_LAT, CENTER_LON, L, N)
-    seed_radius = cell_radius(L / N)
+    tiles = build_grid(args.center_lat, args.center_lon, args.side, args.grid)
+    seed_radius = cell_radius(args.side / args.grid)
+    L_arg, N_arg = args.side, args.grid
 
-    print(f"Grid: {N}x{N} = {len(tiles)} seed tiles over a {L:.0f} m box "
-          f"centered at ({CENTER_LAT:.5f}, {CENTER_LON:.5f})")
-    print(f"Each seed tile: {L/N:.0f} m square, search radius {seed_radius:.0f} m")
+    # Derive grid-preview JSON path from the CSV name for per-city outputs.
+    if args.csv.endswith("_restaurants.csv"):
+        grid_json_path = args.csv.replace("_restaurants.csv", "_grid.json")
+    else:
+        grid_json_path = "scrape_grid.json"
+
+    print(f"Grid: {N_arg}x{N_arg} = {len(tiles)} seed tiles over a {L_arg:.0f} m box "
+          f"centered at ({args.center_lat:.5f}, {args.center_lon:.5f})")
+    print(f"Each seed tile: {L_arg/N_arg:.0f} m square, search radius {seed_radius:.0f} m")
     print(f"Adaptive mesh: saturated tiles split into 4, up to depth {args.max_depth} "
-          f"(min edge {L/N/(2**args.max_depth):.0f} m)"
+          f"(min edge {L_arg/N_arg/(2**args.max_depth):.0f} m)"
           + ("  [refinement OFF]" if args.max_depth == 0 else "") + "\n")
 
     # Preview the seed grid so it can be inspected before spending any quota.
@@ -323,19 +379,19 @@ def main():
 
     if args.dry_run:
         print("\n[dry-run] No API calls made. Remove --dry-run to execute.")
-        with open("munich_grid.json", "w") as f:
+        with open(grid_json_path, "w") as f:
             json.dump([{"lat": t[0], "lon": t[1], "edge": t[2],
                         "radius": cell_radius(t[2])} for t in tiles], f, indent=2)
-        print("Wrote munich_grid.json")
+        print(f"Wrote {grid_json_path}")
         return
 
     if not api_key:
         print("\nGOOGLE_MAPS_API_KEY not set. Grid generated but no calls made.")
         print("Set the key and re-run to execute the scrape, or use --dry-run.")
-        with open("munich_grid.json", "w") as f:
+        with open(grid_json_path, "w") as f:
             json.dump([{"lat": t[0], "lon": t[1], "edge": t[2],
                         "radius": cell_radius(t[2])} for t in tiles], f, indent=2)
-        print("Wrote munich_grid.json")
+        print(f"Wrote {grid_json_path}")
         return
 
     out_csv = args.csv
