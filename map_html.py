@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""
+Interactive Folium map of Munich restaurants.
+
+Each restaurant is a circle marker, colored by Bayesian-weighted rating and
+sized by log(reviews). Tooltip shows name / cuisine / rating / reviews / price.
+Layer control toggles per cuisine. The adaptive scrape grid (munich_grid.json)
+is overlaid as a hidden layer for debugging coverage.
+
+Output: a single self-contained HTML file (default munich_map.html).
+
+Usage:
+    python map_html.py [input_csv] [output_html]
+"""
+
+import sys
+import csv
+import json
+import math
+import os
+
+import folium
+from folium.plugins import MarkerCluster
+
+from divergence_pipeline import classify, MIN_REVIEWS
+
+CENTER_LAT = 48.1370339      # Marienplatz
+CENTER_LON = 11.5758134
+ZOOM_START = 13
+
+
+def load(csv_path):
+    """Load CSV rows with classification, restricted to reviews > MIN_REVIEWS."""
+    rows = []
+    with open(csv_path, newline="") as f:
+        for r in csv.DictReader(f):
+            try:
+                rating = float(r["rating"])
+                reviews = int(float(r["user_rating_count"] or 0))
+                lat = float(r["lat"])
+                lon = float(r["lon"])
+            except (ValueError, TypeError, KeyError):
+                continue
+            if reviews <= MIN_REVIEWS or not (0 < rating <= 5):
+                continue
+            cuisine = classify(r.get("types", "")) or "Other"
+            rows.append({
+                "name": (r.get("name") or "").strip() or "(unnamed)",
+                "rating": rating, "reviews": reviews,
+                "lat": lat, "lon": lon,
+                "cuisine": cuisine,
+                "price": (r.get("price_level") or "").replace("PRICE_LEVEL_", "") or "-",
+            })
+    return rows
+
+
+def add_bayes(rows):
+    """Annotate each row with Bayesian-weighted rating (prior over trustworthy subset)."""
+    pool = [r for r in rows if r["reviews"] > MIN_REVIEWS]  # already true here
+    ratings = [r["rating"] for r in pool]
+    reviews = [r["reviews"] for r in pool]
+    C = sum(ratings) / len(ratings)
+    m = sorted(reviews)[len(reviews) // 2]
+    for r in rows:
+        v = r["reviews"]
+        r["bayes"] = (v / (v + m)) * r["rating"] + (m / (v + m)) * C
+    return m, C
+
+
+def rating_to_color(bayes, lo=4.0, hi=4.8):
+    """Map a Bayesian rating to a HEX color on a red->green ramp.
+
+    Clamps to [lo, hi] so the full range maps to the saturated edges of the ramp.
+    Below lo: red. Above hi: green. Middle: yellow/orange.
+    """
+    t = max(0.0, min(1.0, (bayes - lo) / (hi - lo)))
+    # Red (220, 50, 50) -> Yellow (240, 200, 60) -> Green (40, 160, 70)
+    if t < 0.5:
+        u = t * 2
+        r = int(220 + (240 - 220) * u)
+        g = int(50 + (200 - 50) * u)
+        b = int(50 + (60 - 50) * u)
+    else:
+        u = (t - 0.5) * 2
+        r = int(240 + (40 - 240) * u)
+        g = int(200 + (160 - 200) * u)
+        b = int(60 + (70 - 60) * u)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def radius_from_reviews(reviews, lo=4, hi=18):
+    """Map log10(reviews) into a pixel radius range."""
+    t = (math.log10(max(reviews, 1)) - 2) / (5 - 2)   # 100..100k -> 0..1
+    t = max(0.0, min(1.0, t))
+    return lo + (hi - lo) * t
+
+
+def build_map(rows, grid_path=None):
+    m = folium.Map(
+        location=[CENTER_LAT, CENTER_LON], zoom_start=ZOOM_START,
+        tiles="cartodbpositron", control_scale=True,
+    )
+
+    # One FeatureGroup per cuisine so the LayerControl can toggle them.
+    cuisines = sorted({r["cuisine"] for r in rows})
+    groups = {c: folium.FeatureGroup(name=c, show=True) for c in cuisines}
+
+    for r in rows:
+        tooltip = (
+            f"<b>{r['name']}</b><br>"
+            f"cuisine: {r['cuisine']}<br>"
+            f"rating: {r['rating']:.1f}  (Bayes {r['bayes']:.2f})<br>"
+            f"reviews: {r['reviews']:,}<br>"
+            f"price: {r['price']}"
+        )
+        folium.CircleMarker(
+            location=[r["lat"], r["lon"]],
+            radius=radius_from_reviews(r["reviews"]),
+            color=rating_to_color(r["bayes"]),
+            weight=1, fill=True, fill_opacity=0.75,
+            tooltip=folium.Tooltip(tooltip, sticky=True),
+        ).add_to(groups[r["cuisine"]])
+
+    for g in groups.values():
+        g.add_to(m)
+
+    # Optional: overlay the scrape grid (off by default).
+    if grid_path and os.path.exists(grid_path):
+        grid_layer = folium.FeatureGroup(name="scrape grid", show=False)
+        with open(grid_path) as f:
+            tiles = json.load(f)
+        for t in tiles:
+            # Half-edge expressed in degrees (rough; same approximation as the scraper).
+            half_lat = (t["edge"] / 2) / 111_320
+            half_lon = (t["edge"] / 2) / (111_320 * math.cos(math.radians(t["lat"])))
+            folium.Rectangle(
+                bounds=[
+                    (t["lat"] - half_lat, t["lon"] - half_lon),
+                    (t["lat"] + half_lat, t["lon"] + half_lon),
+                ],
+                color="#444", weight=0.7, fill=False,
+            ).add_to(grid_layer)
+        grid_layer.add_to(m)
+
+    folium.LayerControl(collapsed=False).add_to(m)
+    return m
+
+
+def main():
+    in_csv = sys.argv[1] if len(sys.argv) > 1 else "munich_restaurants.csv"
+    out_html = sys.argv[2] if len(sys.argv) > 2 else "munich_map.html"
+    grid_json = "munich_grid.json"
+
+    rows = load(in_csv)
+    if not rows:
+        print(f"No usable rows in {in_csv}.")
+        sys.exit(1)
+
+    m_prior, C_prior = add_bayes(rows)
+    print(f"Loaded {len(rows)} restaurants (> {MIN_REVIEWS} reviews) from {in_csv}")
+    print(f"Bayesian prior: m={m_prior} reviews, C={C_prior:.2f} stars")
+
+    fmap = build_map(rows, grid_path=grid_json)
+    fmap.save(out_html)
+    print(f"Wrote {out_html}")
+
+
+if __name__ == "__main__":
+    main()
