@@ -154,6 +154,22 @@ def save_scanned(path, scanned):
     os.replace(tmp, path)
 
 
+CSV_FIELDS = ["place_id", "name", "rating", "user_rating_count",
+              "lat", "lon", "types", "price_level"]
+
+
+def save_csv(path, seen):
+    """Atomically write the dedup dict to CSV. No-op if seen is empty."""
+    if not seen:
+        return
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=CSV_FIELDS, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(seen.values())
+    os.replace(tmp, path)
+
+
 def load_csv(path):
     """Load an existing scraper CSV into a {place_id: row} dict for resume."""
     if not os.path.exists(path):
@@ -339,16 +355,11 @@ def main():
         print(f"\nBudget cap of {args.max_calls} calls reached at [{e}]. "
               f"Stopping early and saving partial results.")
     finally:
+        # Order matters: persist places BEFORE marking tiles scanned. If we
+        # saved the scanned marker first and then crashed during the CSV
+        # write, a future run would skip those tiles and lose the places.
+        save_csv(out_csv, seen)
         save_scanned(scanned_db, scanned)
-
-    # Write the full dedup dict — downstream tools apply their own MIN_REVIEWS filter.
-    if seen:
-        fieldnames = ["place_id", "name", "rating", "user_rating_count",
-                      "lat", "lon", "types", "price_level"]
-        with open(out_csv, "w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
-            w.writeheader()
-            w.writerows(seen.values())
 
     filtered_count = sum(
         1 for r in seen.values()

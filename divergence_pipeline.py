@@ -60,9 +60,17 @@ def classify(types_field):
 
 
 def load(csv_path):
-    """Read the CSV into (cuisine, rating) rows, filtering by reviews and validity."""
+    """Read the CSV into (cuisine, rating) rows, filtering by reviews, rating range, and classification.
+
+    Ratings outside [BIN_EDGES[0], BIN_EDGES[-1]] are dropped here rather than
+    silently zeroed by np.histogram later, so they don't inflate a cuisine's
+    apparent group size (the min_group eligibility check) while contributing
+    nothing to its histogram.
+    """
+    lo, hi = BIN_EDGES[0], BIN_EDGES[-1]
     rows = []
     skipped_unclassified = 0
+    skipped_out_of_range = 0
     with open(csv_path, newline="") as f:
         for r in csv.DictReader(f):
             try:
@@ -72,12 +80,15 @@ def load(csv_path):
                 continue
             if rating is None or count <= MIN_REVIEWS:
                 continue
+            if not (lo <= rating < hi):
+                skipped_out_of_range += 1
+                continue
             cuisine = classify(r.get("types", ""))
             if cuisine is None:
                 skipped_unclassified += 1
                 continue
             rows.append((cuisine, rating))
-    return rows, skipped_unclassified
+    return rows, skipped_unclassified, skipped_out_of_range
 
 
 def build_distributions(rows, min_group=3):
@@ -132,7 +143,7 @@ def main():
     in_csv = sys.argv[1] if len(sys.argv) > 1 else "munich_restaurants.csv"
     out_png = sys.argv[2] if len(sys.argv) > 2 else "munich_jsd_heatmap.png"
 
-    rows, skipped = load(in_csv)
+    rows, skipped_unclassified, skipped_oor = load(in_csv)
     if not rows:
         print(f"No usable rows in {in_csv}. Did the scrape run and produce cuisines?")
         sys.exit(1)
@@ -140,7 +151,8 @@ def main():
     cuisines, dists = build_distributions(rows)
 
     print(f"Loaded {len(rows)} classified restaurants from {in_csv} "
-          f"({skipped} unclassified, dropped)")
+          f"({skipped_unclassified} unclassified, "
+          f"{skipped_oor} outside rating range [{BIN_EDGES[0]}, {BIN_EDGES[-1]}); dropped)")
     print(f"Cuisines with enough places: {', '.join(cuisines)}\n")
 
     print("Per-cuisine rating distributions (rows sum to 1):")

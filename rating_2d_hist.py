@@ -31,6 +31,10 @@ N_X_BINS = 24
 Y_LO, Y_HI = 2.5, 5.0
 Y_EDGES = np.arange(Y_LO, Y_HI + 0.01, 0.1)
 
+# Threshold for "trustworthy" rows used to compute the Bayesian prior and to
+# gate the by-rating top-10 table. Matches the scraper's MIN_REVIEWS.
+MIN_REVIEWS = 100
+
 
 def load(csv_path):
     """Return a list of {name, rating, reviews, price} dicts (one per valid row)."""
@@ -61,20 +65,27 @@ SORT_MODES = {
 }
 
 
-def add_bayes(rows):
+def add_bayes(rows, min_reviews=MIN_REVIEWS):
     """Annotate each row with a Bayesian-weighted rating using an IMDb-style formula.
 
     WR = (v / (v + m)) * R + (m / (v + m)) * C
         R = the place's average rating
         v = the place's review count
-        C = global mean rating across the dataset (the prior mean)
-        m = prior strength, in "equivalent reviews" — uses the median review count
-            so 100-review places get noticeably shrunk but 5k-review places barely budge.
+        C = mean rating across the *trustworthy* subset (reviews >= min_reviews)
+        m = median review count *within that same subset*
+
+    The prior must be computed on the trustworthy subset; computing it over the
+    full unfiltered CSV (which now includes <100-review places) would pull m
+    toward tiny numbers, defeating the shrinkage that gives this formula its
+    point.
 
     Returns (m, C) for display.
     """
-    ratings = np.array([r["rating"] for r in rows])
-    reviews = np.array([r["reviews"] for r in rows])
+    pool = [r for r in rows if r["reviews"] >= min_reviews]
+    if not pool:
+        pool = rows  # CSV has no high-N rows; fall back so we still return something
+    ratings = np.array([r["rating"] for r in pool])
+    reviews = np.array([r["reviews"] for r in pool])
     C = float(ratings.mean())
     m = float(np.median(reviews))
     for r in rows:
@@ -84,9 +95,19 @@ def add_bayes(rows):
 
 
 def print_top(rows, n=10, *, by="rating"):
-    """Print the top-n restaurants ranked according to SORT_MODES[by]."""
+    """Print the top-n restaurants ranked according to SORT_MODES[by].
+
+    Ranking by raw rating with no review-count floor degenerates into "5.0 with
+    3 reviews" theatre once the CSV stops being pre-filtered, so the rating
+    table is restricted to MIN_REVIEWS. Reviews and Bayes are self-protecting
+    (large-N is implied by reviews; Bayes shrinks small-N toward the prior).
+    """
     key, heading = SORT_MODES[by]
-    top = sorted(rows, key=key, reverse=True)[:n]
+    pool = rows
+    if by == "rating":
+        pool = [r for r in rows if r["reviews"] >= MIN_REVIEWS]
+        heading = f"{heading} (reviews >= {MIN_REVIEWS})"
+    top = sorted(pool, key=key, reverse=True)[:n]
     show_bayes = (by == "bayes")
     t = PrettyTable()
     cols = ["#", "Restaurant", "Rating", "Reviews", "Price"]
