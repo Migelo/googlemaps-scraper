@@ -81,7 +81,7 @@ def add_bayes(rows, min_reviews=MIN_REVIEWS):
 
     Returns (m, C) for display.
     """
-    pool = [r for r in rows if r["reviews"] >= min_reviews]
+    pool = [r for r in rows if r["reviews"] > min_reviews]
     if not pool:
         pool = rows  # CSV has no high-N rows; fall back so we still return something
     ratings = np.array([r["rating"] for r in pool])
@@ -105,8 +105,8 @@ def print_top(rows, n=10, *, by="rating"):
     key, heading = SORT_MODES[by]
     pool = rows
     if by == "rating":
-        pool = [r for r in rows if r["reviews"] >= MIN_REVIEWS]
-        heading = f"{heading} (reviews >= {MIN_REVIEWS})"
+        pool = [r for r in rows if r["reviews"] > MIN_REVIEWS]
+        heading = f"{heading} (reviews > {MIN_REVIEWS})"
     top = sorted(pool, key=key, reverse=True)[:n]
     show_bayes = (by == "bayes")
     t = PrettyTable()
@@ -218,9 +218,10 @@ def main():
     ratings = np.array([r["rating"] for r in rows])
     print(f"Loaded {len(rows)} restaurants from {in_csv}")
     print(f"  rating  range: {ratings.min():.1f} - {ratings.max():.1f}, "
-          f"median {np.median(ratings):.2f}")
+          f"median {np.median(ratings):.2f} (full set)")
     print(f"  count   range: {counts.min()} - {counts.max()}, "
-          f"median {int(np.median(counts))}")
+          f"median {int(np.median(counts))} (full set)")
+    print(f"  in-window medians are annotated on the plot itself.")
 
     m, C = add_bayes(rows)
     print(f"\nBayesian prior: m = {m:.0f} reviews (median), C = {C:.2f} stars (mean)")

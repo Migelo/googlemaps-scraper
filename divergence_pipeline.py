@@ -51,7 +51,13 @@ CUISINE_RULES = [
 
 
 def classify(types_field):
-    """Map a pipe-delimited Google types string to a cuisine label, or None."""
+    """Map a pipe-delimited Google types string to a cuisine label, or None.
+
+    Order-dependent: the first matching CUISINE_RULES entry wins. A place
+    tagged both `pizza_restaurant` and `mediterranean_restaurant` becomes
+    "Italian" because Italian is listed earlier. Broad fallbacks (Asian,
+    Mediterranean) intentionally sit last.
+    """
     types = set(types_field.split("|")) if types_field else set()
     for label, keys in CUISINE_RULES:
         if any(k in types for k in keys):

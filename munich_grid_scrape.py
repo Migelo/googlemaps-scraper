@@ -140,8 +140,11 @@ def load_scanned(path):
         return set()
     try:
         with open(path) as f:
-            return set(json.load(f).get("tiles", []))
-    except (json.JSONDecodeError, OSError) as e:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError(f"expected JSON object at top level, got {type(data).__name__}")
+        return set(data.get("tiles", []))
+    except (json.JSONDecodeError, ValueError, OSError, AttributeError) as e:
         print(f"  (could not read {path}: {e}; starting fresh)")
         return set()
 
@@ -342,6 +345,12 @@ def main():
     if seen or scanned:
         print(f"Resume: {len(seen)} known places in {out_csv}, "
               f"{len(scanned)} fully-scanned tiles in {scanned_db}\n")
+    # Consistency check: scanned-db without a matching CSV means the next
+    # scrape will skip those tiles and produce empty/incomplete output.
+    if scanned and not seen:
+        print(f"WARNING: {scanned_db} marks {len(scanned)} tiles fully scanned, "
+              f"but {out_csv} has no places. Those tiles will be SKIPPED with no "
+              f"data. Pass --no-resume to ignore the scanned-db, or restore the CSV.\n")
 
     stats = {"calls": 0, "raw": 0, "capped_leaves": 0, "skipped": 0}
     aborted = False
