@@ -289,6 +289,14 @@ def print_summary_table(cuisines, M, M_lo, M_hi):
             f"[{lo:.3f}, {hi:.3f}]",
             "(ns)" if ns else "",
         ])
+    print(
+        "\nJensen-Shannon divergence (base 2) measures how different two probability\n"
+        "distributions are. It is symmetric (JSD(a,b) = JSD(b,a)) and bounded in [0, 1]:\n"
+        "  0   = the two cuisines have identical rating distributions\n"
+        "  ~0.05 and below — practically indistinguishable at this sample size (see (ns))\n"
+        "  0.1-0.2 — clearly different shapes (e.g. one is right-skewed, the other flat)\n"
+        "  1   = no overlap at all (would require disjoint rating bands; doesn't happen here)"
+    )
     print(f"\nAll {len(pairs)} pairs by JSD (descending) — summary of the heatmap:")
     print(t)
 
