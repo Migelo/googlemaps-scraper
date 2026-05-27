@@ -154,7 +154,61 @@ def build_map(rows, grid_path=None):
         grid_layer.add_to(m)
 
     folium.LayerControl(collapsed=False).add_to(m)
+    m.get_root().html.add_child(folium.Element(_legend_html()))
     return m
+
+
+def _legend_html():
+    """Floating legend in the bottom-left explaining marker color and size.
+
+    The color stops mirror rating_to_color()'s ramp; the SVG circle radii
+    mirror radius_from_reviews() at log10 = 2, 3, 4, 5 so the swatches match
+    actual marker sizes on the map.
+    """
+    return """
+    <div style="position: absolute; bottom: 28px; left: 16px; z-index: 1000;
+                background: white; padding: 10px 12px; border-radius: 4px;
+                box-shadow: 0 1px 4px rgba(0,0,0,0.25);
+                font-family: -apple-system, sans-serif; font-size: 12px;
+                color: #222;">
+      <div style="font-weight: 600; margin-bottom: 4px;">Bayesian rating</div>
+      <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 12px;">
+        <span style="font-variant-numeric: tabular-nums;">4.0</span>
+        <div style="width: 150px; height: 12px;
+                    background: linear-gradient(to right,
+                        rgb(220, 50, 50),
+                        rgb(240, 200, 60),
+                        rgb(40, 160, 70));
+                    border: 1px solid #888;"></div>
+        <span style="font-variant-numeric: tabular-nums;">4.8</span>
+      </div>
+      <div style="font-weight: 600; margin-bottom: 4px;">Review count</div>
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <span style="display: inline-flex; flex-direction: column; align-items: center;">
+          <svg width="12" height="12" viewBox="0 0 12 12">
+            <circle cx="6" cy="6" r="4" fill="#888" stroke="#222" stroke-width="0.5"/>
+          </svg>
+          <span>10²</span>
+        </span>
+        <span style="display: inline-flex; flex-direction: column; align-items: center;">
+          <svg width="22" height="22" viewBox="0 0 22 22">
+            <circle cx="11" cy="11" r="9" fill="#888" stroke="#222" stroke-width="0.5"/>
+          </svg>
+          <span>10³</span>
+        </span>
+        <span style="display: inline-flex; flex-direction: column; align-items: center;">
+          <svg width="32" height="32" viewBox="0 0 32 32">
+            <circle cx="16" cy="16" r="13" fill="#888" stroke="#222" stroke-width="0.5"/>
+          </svg>
+          <span>10⁴</span>
+        </span>
+        <span style="display: inline-flex; flex-direction: column; align-items: center;">
+          <svg width="40" height="40" viewBox="0 0 40 40"><circle cx="20" cy="20" r="18" fill="#888" stroke="#222" stroke-width="0.5"/></svg>
+          <span>10⁵</span>
+        </span>
+      </div>
+    </div>
+    """
 
 
 def main():
