@@ -23,6 +23,7 @@ from scipy.spatial.distance import jensenshannon
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from prettytable import PrettyTable
 
 # Minimum reviews to include. The scraper already filters, but enforcing it here
 # keeps the pipeline correct even if fed an unfiltered CSV.
@@ -260,6 +261,36 @@ def main():
             print(f"  {a:<13} ~ {b:<13}  JSD = {m:.4f}  [95% CI: {lo:.4f}, {hi:.4f}]")
 
     plot(M, cuisines, out_png, len(rows), M_lo=M_lo, M_hi=M_hi)
+    print_summary_table(cuisines, M, M_lo, M_hi)
+
+
+def print_summary_table(cuisines, M, M_lo, M_hi):
+    """Lower-triangle JSD pairs sorted by divergence, mirroring what the PNG shows."""
+    pairs = []
+    for i in range(len(cuisines)):
+        for j in range(i + 1, len(cuisines)):
+            half = (M_hi[i, j] - M_lo[i, j]) / 2
+            pairs.append((cuisines[i], cuisines[j], M[i, j],
+                          M_lo[i, j], M_hi[i, j], half, M_lo[i, j] <= 0.005))
+    pairs.sort(key=lambda p: p[2], reverse=True)
+
+    t = PrettyTable()
+    t.field_names = ["Pair", "JSD", "± half-CI", "95% CI", "Note"]
+    t.align["Pair"] = "l"
+    t.align["JSD"] = "r"
+    t.align["± half-CI"] = "r"
+    t.align["95% CI"] = "c"
+    t.align["Note"] = "l"
+    for a, b, m, lo, hi, half, ns in pairs:
+        t.add_row([
+            f"{a} ~ {b}",
+            f"{m:.3f}",
+            f"±{half:.3f}",
+            f"[{lo:.3f}, {hi:.3f}]",
+            "(ns)" if ns else "",
+        ])
+    print(f"\nAll {len(pairs)} pairs by JSD (descending) — summary of the heatmap:")
+    print(t)
 
 
 if __name__ == "__main__":
