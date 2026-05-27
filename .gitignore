@@ -18,6 +18,8 @@ __pycache__/
 *_restaurants.csv
 *_scanned_tiles.json
 *.html
+# Exception: the published GitHub Pages copy of the Folium map.
+!docs/index.html
 
 # Editor / OS
 .vscode/
