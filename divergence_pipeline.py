@@ -114,18 +114,56 @@ def build_distributions(rows, min_group=3):
 
 
 def jsd_matrix(cuisines, dists):
-    """Pairwise Jensen-Shannon divergence (base 2), squaring scipy's distance."""
+    """Pairwise Jensen-Shannon divergence (base 2), squaring scipy's distance.
+
+    Exploits symmetry: computes the upper triangle once and mirrors.
+    """
     n = len(cuisines)
     M = np.zeros((n, n))
-    for i, a in enumerate(cuisines):
-        for j, b in enumerate(cuisines):
-            M[i, j] = jensenshannon(dists[a], dists[b], base=2) ** 2
+    for i in range(n):
+        for j in range(i + 1, n):
+            d = jensenshannon(dists[cuisines[i]], dists[cuisines[j]], base=2) ** 2
+            M[i, j] = M[j, i] = d
     return M
 
 
-def plot(M, cuisines, out_png, n_places):
+def bootstrap_jsd(rows, cuisines, n_boot=1000, rng=None):
+    """Resample within-cuisine with replacement n_boot times, return 95% CIs.
+
+    Returns (M_mean, M_lo, M_hi) where each is (k, k) — k = len(cuisines).
+    Smoothed distributions are rebuilt each iteration; smoothing keeps JSD
+    finite even when a tiny resample lands all-in-one-bin.
+    """
+    rng = rng if rng is not None else np.random.default_rng(42)
+    by_cuisine = {c: np.array([r for cc, r in rows if cc == c]) for c in cuisines}
+    k = len(cuisines)
+    samples = np.zeros((n_boot, k, k))
+    for b in range(n_boot):
+        # Resample each cuisine's ratings, with replacement, to its original size.
+        boot_dists = {}
+        for c in cuisines:
+            base = by_cuisine[c]
+            draw = rng.choice(base, size=len(base), replace=True)
+            hist, _ = np.histogram(draw, bins=BIN_EDGES)
+            p = hist.astype(float) + 0.5
+            p /= p.sum()
+            boot_dists[c] = p
+        samples[b] = jsd_matrix(cuisines, boot_dists)
+    mean = samples.mean(axis=0)
+    lo = np.percentile(samples, 2.5, axis=0)
+    hi = np.percentile(samples, 97.5, axis=0)
+    return mean, lo, hi
+
+
+def plot(M, cuisines, out_png, n_places, M_lo=None, M_hi=None):
+    """Heatmap of JSD with optional CI annotations.
+
+    With bootstrap CIs, each cell shows `mean ± half_width` and a CI crossing
+    zero (or near-zero JSD lower bound) gets a small marker — those pairs are
+    statistically indistinguishable.
+    """
     n = len(cuisines)
-    fig, ax = plt.subplots(figsize=(max(6.5, 1.0 * n + 2.5), max(5.5, 0.9 * n + 2)))
+    fig, ax = plt.subplots(figsize=(max(7.5, 1.1 * n + 2.5), max(6, n + 2)))
     im = ax.imshow(M, cmap="magma_r")
     ax.set_xticks(range(n)); ax.set_yticks(range(n))
     ax.set_xticklabels(cuisines, rotation=45, ha="right")
@@ -133,13 +171,26 @@ def plot(M, cuisines, out_png, n_places):
     for i in range(n):
         for j in range(n):
             v = M[i, j]
-            ax.text(j, i, f"{v:.3f}", ha="center", va="center",
-                    color="white" if v > M.max() * 0.55 else "black", fontsize=9)
+            label = f"{v:.3f}"
+            if M_lo is not None:
+                half = (M_hi[i, j] - M_lo[i, j]) / 2
+                label = f"{v:.3f}\n±{half:.3f}"
+                # Mark cells whose CI lower bound is below 0.005 — pairs of
+                # JSDs that small (with smoothing) are effectively zero, so
+                # we can't reject "same distribution" at 95%.
+                if M_lo[i, j] <= 0.005 and i != j:
+                    label += "\n(ns)"
+            ax.text(j, i, label, ha="center", va="center",
+                    color="white" if v > M.max() * 0.55 else "black", fontsize=8)
     cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     cbar.set_label("Jensen-Shannon divergence (base 2)", fontsize=10)
+    subtitle = (
+        f"with 95% bootstrap CIs (1000 resamples); (ns) = CI touches 0"
+        if M_lo is not None else ""
+    )
     ax.set_title("Pairwise JS divergence of star-rating distributions\n"
                  f"Munich restaurants with >{MIN_REVIEWS} reviews, by cuisine "
-                 f"(n={n_places})", fontsize=12, pad=12)
+                 f"(n={n_places})\n{subtitle}", fontsize=11, pad=10)
     plt.tight_layout()
     plt.savefig(out_png, dpi=150)
     print(f"Wrote {out_png}")
@@ -167,6 +218,11 @@ def main():
         print(f"{c:<13} " + "  ".join(f"{x:8.3f}" for x in dists[c]))
 
     M = jsd_matrix(cuisines, dists)
+
+    # Bootstrap 95% CIs on every pair. Cheap at this scale (~1.5 s for k=11).
+    print("\nBootstrapping JSD (1000 resamples) ...")
+    M_mean, M_lo, M_hi = bootstrap_jsd(rows, cuisines, n_boot=1000)
+
     print("\nPairwise Jensen-Shannon divergence matrix:")
     print(f"{'':<13} " + "  ".join(f"{c[:6]:>7}" for c in cuisines))
     for i, c in enumerate(cuisines):
@@ -178,7 +234,19 @@ def main():
         print(f"\nMost similar pair:   {pairs[0][1]} vs {pairs[0][2]}  ({pairs[0][0]:.4f})")
         print(f"Most divergent pair: {pairs[-1][1]} vs {pairs[-1][2]}  ({pairs[-1][0]:.4f})")
 
-    plot(M, cuisines, out_png, len(rows))
+    # Surface pairs whose 95% CI touches zero — statistically indistinguishable.
+    ns_pairs = [
+        (cuisines[i], cuisines[j], M[i, j], M_lo[i, j], M_hi[i, j])
+        for i in range(len(cuisines))
+        for j in range(i + 1, len(cuisines))
+        if M_lo[i, j] <= 0.005
+    ]
+    if ns_pairs:
+        print(f"\nStatistically indistinguishable pairs at 95% (CI touches 0):")
+        for a, b, m, lo, hi in ns_pairs:
+            print(f"  {a:<13} ~ {b:<13}  JSD = {m:.4f}  [95% CI: {lo:.4f}, {hi:.4f}]")
+
+    plot(M, cuisines, out_png, len(rows), M_lo=M_lo, M_hi=M_hi)
 
 
 if __name__ == "__main__":
