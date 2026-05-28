@@ -173,6 +173,12 @@ def _legend_html():
                 box-shadow: 0 1px 4px rgba(0,0,0,0.25);
                 font-family: -apple-system, sans-serif; font-size: 12px;
                 color: #222;">
+      <button type="button" onclick="__toggleAllCuisines()"
+              style="width: 100%; margin-bottom: 8px; padding: 4px 8px;
+                     font-size: 12px; cursor: pointer; border: 1px solid #888;
+                     border-radius: 3px; background: #f4f4f4;">
+        Toggle all cuisines
+      </button>
       <div style="font-weight: 600; margin-bottom: 4px;">Bayesian rating</div>
       <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 12px;">
         <span style="font-variant-numeric: tabular-nums;">4.0</span>
@@ -210,6 +216,26 @@ def _legend_html():
         </span>
       </div>
     </div>
+    <script>
+      // Toggle every cuisine layer at once by driving the LayerControl
+      // checkboxes (Folium names its layer vars dynamically, so the DOM
+      // checkboxes are the stable handle). Leaves the "scrape grid" debug
+      // overlay untouched. If any cuisine is on, the click turns all off;
+      // otherwise it turns all on.
+      function __toggleAllCuisines() {
+        var labels = document.querySelectorAll(
+          '.leaflet-control-layers-overlays label');
+        var boxes = [];
+        labels.forEach(function (l) {
+          if (l.textContent.trim() === 'scrape grid') return;
+          var cb = l.querySelector('input[type=checkbox]');
+          if (cb) boxes.push(cb);
+        });
+        if (!boxes.length) return;
+        var anyOn = boxes.some(function (b) { return b.checked; });
+        boxes.forEach(function (b) { if (b.checked === anyOn) b.click(); });
+      }
+    </script>
     """
 
 
