@@ -1,7 +1,7 @@
 # Munich Restaurant Analysis Toolkit
 
-A Google Places (New) scraper plus a suite of analyses, run against ~2,200
-restaurants in central Munich (~1,600 with `reviews > 100`). Multi-city:
+A Google Places (New) scraper plus a suite of analyses, run against ~3,070
+restaurants in central Munich (~2,150 with `reviews > 100`). Multi-city:
 `--city berlin|vienna|hamburg` or a custom `--center` / `--side` / `--grid`.
 
 `MIN_REVIEWS = 100` is strict (`>`) everywhere; places with exactly 100
@@ -13,9 +13,9 @@ reviews are dropped.
 
 ![Scan coverage](munich_scan_coverage.png)
 
-A 5 km box around Marienplatz, tiled into 16 seed cells. Cells that hit the
-API's 20-result cap subdivide into four children of half the edge and
-re-query, up to `--max-depth`. The map shows 1,623 places, colored by
+A 7.5 km box around Marienplatz, tiled into 36 seed cells (6×6). Cells that
+hit the API's 20-result cap subdivide into four children of half the edge and
+re-query, up to `--max-depth`. The map shows 2,153 places, colored by
 average rating.
 
 Resume is built in and grid-independent. `{city}_coverage.json` records the
@@ -74,7 +74,7 @@ rating (prior `k=8` toward the global mean).
 
 - **Italian "inexpensive"** scores notably below Italian overall; cheap
   pizza drags it down.
-- **`price_level` is missing on 35% of places.** Google hides the price
+- **`price_level` is missing on 32% of places.** Google hides the price
   tag on smaller / lower-traffic restaurants, and those places have higher
   ratings on average. Surfaced as its own column rather than dropped.
 
@@ -134,6 +134,10 @@ uv run python scan_coverage.py
 uv run python map_html.py
 ```
 
+Or regenerate every plot + the HTML map + the `docs/` Pages copy in one shot
+with `make`. `make tables` runs the print-only analyses; `make clean` removes
+the generated PNGs.
+
 Multi-city:
 
 ```bash
@@ -146,8 +150,8 @@ uv run python munich_grid_scrape.py --center 48.137,11.576 --side 8000 --grid 8
 ## Cost and quota
 
 The field mask puts calls in the **Nearby Search Enterprise** SKU: $35 per
-1,000 calls after a free 1,000 calls per month. A full 5 km Munich scrape
-lands around 500–700 calls.
+1,000 calls after a free 1,000 calls per month. A full 7.5 km Munich scrape
+(36 seed tiles, adaptive subdivision) lands in the high hundreds of calls.
 
 ---
 
@@ -164,6 +168,7 @@ price_cuisine_grid.py     # price × cuisine contingency
 neighborhoods.py          # DBSCAN clusters
 name_tokens.py            # name-token regression
 scan_coverage.py          # coverage PNG (first image)
+Makefile                  # regenerate all plots + HTML map: `make`
 ```
 
 Generated artifacts (gitignored: `*_grid.json`, `*_restaurants.csv`,

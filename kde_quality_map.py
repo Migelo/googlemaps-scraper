@@ -28,11 +28,10 @@ from pyproj import Transformer
 import contextily as cx
 
 from cuisine import MIN_REVIEWS
+from munich_grid_scrape import M_PER_DEG_LAT, m_per_deg_lon
 
-# Bounding box in (lat, lon) covering the scraped 5 km Munich box plus padding.
-LAT_LO, LAT_HI = 48.110, 48.165
-LON_LO, LON_HI = 11.540, 11.615
 GRID_RES = 220   # samples per side for KDE evaluation
+PAD_M = 400      # meters of padding around the data extent for the KDE window
 
 # Bandwidth: KDE auto-bandwidth via Scott's rule is often too tight in geo data;
 # multiply by this factor for visually meaningful smoothing.
@@ -55,16 +54,28 @@ def load(csv_path):
                 continue
             if reviews <= MIN_REVIEWS or not (0 < rating <= 5):
                 continue
-            if not (LAT_LO <= lat <= LAT_HI and LON_LO <= lon <= LON_HI):
-                continue
             rows.append((lat, lon, rating, reviews))
     return rows
 
 
-def build_grid_3857():
-    """Return a meshgrid in EPSG:3857 covering the LAT/LON box."""
-    xs_lo, ys_lo = to_3857.transform(LON_LO, LAT_LO)
-    xs_hi, ys_hi = to_3857.transform(LON_HI, LAT_HI)
+def data_window(lats, lons):
+    """Padded (lat_lo, lat_hi, lon_lo, lon_hi) box enclosing all points.
+
+    Frames whatever was actually scraped instead of a fixed extent, so a larger
+    scrape isn't clipped.
+    """
+    mlon = m_per_deg_lon((lats.min() + lats.max()) / 2)
+    dlat = PAD_M / M_PER_DEG_LAT
+    dlon = PAD_M / mlon
+    return (lats.min() - dlat, lats.max() + dlat,
+            lons.min() - dlon, lons.max() + dlon)
+
+
+def build_grid_3857(bounds):
+    """Return a meshgrid in EPSG:3857 covering the (lat_lo,lat_hi,lon_lo,lon_hi) box."""
+    lat_lo, lat_hi, lon_lo, lon_hi = bounds
+    xs_lo, ys_lo = to_3857.transform(lon_lo, lat_lo)
+    xs_hi, ys_hi = to_3857.transform(lon_hi, lat_hi)
     xs = np.linspace(xs_lo, xs_hi, GRID_RES)
     ys = np.linspace(ys_lo, ys_hi, GRID_RES)
     X, Y = np.meshgrid(xs, ys)
@@ -88,7 +99,7 @@ def plot(rows, out_png):
     # Project once.
     xs, ys = to_3857.transform(lons, lats)
 
-    gridX, gridY, extent = build_grid_3857()
+    gridX, gridY, extent = build_grid_3857(data_window(lats, lons))
 
     # Panel A: density (uniform weights).
     A = kde(xs, ys, weights=None, gridX=gridX, gridY=gridY)
@@ -169,7 +180,7 @@ def main():
         print(f"Only {len(rows)} usable rows in {in_csv}; KDE needs more data.")
         sys.exit(1)
 
-    print(f"Loaded {len(rows)} restaurants (> {MIN_REVIEWS} reviews) in window")
+    print(f"Loaded {len(rows)} restaurants (> {MIN_REVIEWS} reviews)")
     plot(rows, out_png)
 
 

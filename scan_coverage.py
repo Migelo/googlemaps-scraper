@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Static PNG showing the scan footprint: 5 km box + every scraped place on OSM."""
+"""Static PNG showing the scan footprint: scanned box + every scraped place on OSM."""
 
 import sys
 import csv
+import json
 import math
 
 import numpy as np
@@ -15,9 +16,33 @@ from pyproj import Transformer
 from munich_grid_scrape import DEFAULT_CENTER_LAT, DEFAULT_CENTER_LON, L, M_PER_DEG_LAT, m_per_deg_lon
 
 CSV_PATH = "munich_restaurants.csv"
+COVERAGE_PATH = "munich_coverage.json"
 OUT_PNG = "munich_scan_coverage.png"
 
 to_3857 = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
+
+
+def scanned_extent(m_lon):
+    """Return ([lat_lo, lat_hi], [lon_lo, lon_hi]) of the actually-scanned area.
+
+    Read from the coverage file's union of square cells so the box matches the
+    real scrape regardless of the --side used. Falls back to the default L box
+    around Marienplatz when no coverage file is present.
+    """
+    try:
+        cells = json.load(open(COVERAGE_PATH))["cells"]
+        if not cells:
+            raise ValueError("empty coverage")
+    except (OSError, ValueError, KeyError, json.JSONDecodeError):
+        half = L / 2
+        return ([DEFAULT_CENTER_LAT - half / M_PER_DEG_LAT,
+                 DEFAULT_CENTER_LAT + half / M_PER_DEG_LAT],
+                [DEFAULT_CENTER_LON - half / m_lon,
+                 DEFAULT_CENTER_LON + half / m_lon])
+    return ([min(lt - (e / 2) / M_PER_DEG_LAT for lt, _, e in cells),
+             max(lt + (e / 2) / M_PER_DEG_LAT for lt, _, e in cells)],
+            [min(ln - (e / 2) / m_lon for _, ln, e in cells),
+             max(ln + (e / 2) / m_lon for _, ln, e in cells)])
 
 
 def main():
@@ -36,13 +61,11 @@ def main():
         lats.append(lat); lons.append(lon); ratings.append(rating)
     lats = np.array(lats); lons = np.array(lons); ratings = np.array(ratings)
 
-    # Compute the 5 km box corners (lat/lon), then project to web mercator.
-    half = L / 2
+    # Draw the actually-scanned region's bounding box (read from the coverage
+    # file), then project its corners to web mercator.
     m_lon = m_per_deg_lon(DEFAULT_CENTER_LAT)
-    box_lat = [DEFAULT_CENTER_LAT - half / M_PER_DEG_LAT,
-               DEFAULT_CENTER_LAT + half / M_PER_DEG_LAT]
-    box_lon = [DEFAULT_CENTER_LON - half / m_lon,
-               DEFAULT_CENTER_LON + half / m_lon]
+    box_lat, box_lon = scanned_extent(m_lon)
+    side_km = (box_lon[1] - box_lon[0]) * m_lon / 1000
     bx, by = to_3857.transform(
         [box_lon[0], box_lon[1], box_lon[1], box_lon[0], box_lon[0]],
         [box_lat[0], box_lat[0], box_lat[1], box_lat[1], box_lat[0]],
@@ -67,7 +90,7 @@ def main():
 
     ax.set_xticks([]); ax.set_yticks([])
     ax.set_title(
-        f"Munich scan coverage: {L/1000:.0f} km box around Marienplatz\n"
+        f"Munich scan coverage: {side_km:.1f} km box around Marienplatz\n"
         f"{len(lats)} restaurants scraped (>{100} reviews)",
         fontsize=11,
     )
