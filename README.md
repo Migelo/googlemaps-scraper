@@ -110,9 +110,6 @@ python -m http.server 8765 && open http://localhost:8765/munich_map.html
 
 - `outliers.py`: per-cuisine z-score scaled by `v/(v+m)` so tiny-N can't
   dominate; prints "most surprising for its kind" tables.
-- `name_tokens.py`: ridge regression of rating on tokenized names
-  (ASCII-folded, freq ≥ 10) plus cuisine fixed effects, weighted by
-  `log10(reviews)`, with bootstrap CIs.
 
 ---
 
@@ -130,7 +127,6 @@ uv run python rating_2d_hist.py
 uv run python kde_quality_map.py
 uv run python price_cuisine_grid.py
 uv run python outliers.py
-uv run python name_tokens.py
 uv run python scan_coverage.py
 uv run python map_html.py
 ```
@@ -166,7 +162,6 @@ outliers.py               # cuisine-conditioned z-scores
 map_html.py               # Folium interactive map
 kde_quality_map.py        # geographic quality heatmap
 price_cuisine_grid.py     # price × cuisine contingency
-name_tokens.py            # name-token regression
 scan_coverage.py          # coverage PNG (first image)
 Makefile                  # regenerate all plots + HTML map: `make`
 ```
