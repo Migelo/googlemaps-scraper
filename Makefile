@@ -30,10 +30,9 @@ munich_map.html: map_html.py $(CSV)
 docs/index.html: munich_map.html
 	cp munich_map.html docs/index.html
 
-# Print-only summaries (no file output); --geocode is omitted (it costs money).
+# Print-only summaries (no file output).
 tables:
 	$(PY) outliers.py
-	$(PY) neighborhoods.py
 	$(PY) name_tokens.py
 
 # WARNING: hits the paid Google Places API. Non-default; run manually only.

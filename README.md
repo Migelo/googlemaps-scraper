@@ -113,9 +113,6 @@ python -m http.server 8765 && open http://localhost:8765/munich_map.html
 - `name_tokens.py`: ridge regression of rating on tokenized names
   (ASCII-folded, freq ≥ 10) plus cuisine fixed effects, weighted by
   `log10(reviews)`, with bootstrap CIs.
-- `neighborhoods.py`: DBSCAN on UTM-zone-32N coords, `eps=80 m`,
-  `min_samples=10`. Per cluster: count, top cuisines, modal price, mean
-  rating. `--geocode` reverse-geocodes each centroid (~$0.10).
 
 ---
 
@@ -133,7 +130,6 @@ uv run python rating_2d_hist.py
 uv run python kde_quality_map.py
 uv run python price_cuisine_grid.py
 uv run python outliers.py
-uv run python neighborhoods.py
 uv run python name_tokens.py
 uv run python scan_coverage.py
 uv run python map_html.py
@@ -170,7 +166,6 @@ outliers.py               # cuisine-conditioned z-scores
 map_html.py               # Folium interactive map
 kde_quality_map.py        # geographic quality heatmap
 price_cuisine_grid.py     # price × cuisine contingency
-neighborhoods.py          # DBSCAN clusters
 name_tokens.py            # name-token regression
 scan_coverage.py          # coverage PNG (first image)
 Makefile                  # regenerate all plots + HTML map: `make`
