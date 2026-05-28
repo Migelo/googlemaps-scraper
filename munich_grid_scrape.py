@@ -66,6 +66,12 @@ CITIES = {
     "hamburg": (53.5511,     9.9937),       # Rathausmarkt
 }
 
+# Per-city default box side in meters; falls back to L when a city is unlisted.
+# Berlin sprawls well beyond Munich's footprint, so it defaults to a wider box.
+CITY_SIDE = {
+    "berlin": 13000.0,
+}
+
 
 def cell_radius(edge_m):
     """Search radius that covers a square cell of the given edge: its half-diagonal."""
@@ -393,8 +399,9 @@ def parse_args():
                         "to {city}_restaurants.csv / {city}_coverage.json")
     p.add_argument("--center", default=None,
                    help='manual center as "LAT,LON" (overrides --city)')
-    p.add_argument("--side", type=float, default=L,
-                   help=f"bounding-box side length in meters (default {int(L)})")
+    p.add_argument("--side", type=float, default=None,
+                   help=f"bounding-box side length in meters (default {int(L)}; "
+                        f"some cities default wider, e.g. berlin {int(CITY_SIDE['berlin'])})")
     p.add_argument("--grid", type=int, default=N,
                    help=f"tiles per side (default {N})")
     p.add_argument("--csv", default=None,
@@ -419,6 +426,10 @@ def parse_args():
     else:
         args.center_lat, args.center_lon = DEFAULT_CENTER_LAT, DEFAULT_CENTER_LON
         slug = "munich"
+
+    # Default box side from the city (Berlin is wider); manual --side wins.
+    if args.side is None:
+        args.side = CITY_SIDE.get(slug, L)
 
     # Default output paths from the slug. munich keeps its legacy CSV name so the
     # existing dataset is picked up automatically; the coverage file is the new
