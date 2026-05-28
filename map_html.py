@@ -99,11 +99,14 @@ def build_map(rows, grid_path=None):
     # prefer_canvas: render 1k+ markers as one canvas element instead of one
     # SVG node per circle. Leaflet's SVG renderer chokes well before 2k markers
     # — pages can appear blank or hang. Canvas keeps it interactive at this size.
+    # tiles=None + a control=False TileLayer adds the basemap without listing it
+    # as a (non-removable) radio entry in the LayerControl.
     m = folium.Map(
         location=[CENTER_LAT, CENTER_LON], zoom_start=ZOOM_START,
-        tiles="cartodbpositron", control_scale=True,
+        tiles=None, control_scale=True,
         prefer_canvas=True,
     )
+    folium.TileLayer("cartodbpositron", control=False).add_to(m)
 
     # One FeatureGroup per cuisine so the LayerControl can toggle them.
     cuisines = sorted({r["cuisine"] for r in rows})
@@ -173,12 +176,6 @@ def _legend_html():
                 box-shadow: 0 1px 4px rgba(0,0,0,0.25);
                 font-family: -apple-system, sans-serif; font-size: 12px;
                 color: #222;">
-      <button type="button" onclick="__toggleAllCuisines()"
-              style="width: 100%; margin-bottom: 8px; padding: 4px 8px;
-                     font-size: 12px; cursor: pointer; border: 1px solid #888;
-                     border-radius: 3px; background: #f4f4f4;">
-        Toggle all cuisines
-      </button>
       <div style="font-weight: 600; margin-bottom: 4px;">Bayesian rating</div>
       <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 12px;">
         <span style="font-variant-numeric: tabular-nums;">4.0</span>
@@ -217,24 +214,36 @@ def _legend_html():
       </div>
     </div>
     <script>
-      // Toggle every cuisine layer at once by driving the LayerControl
-      // checkboxes (Folium names its layer vars dynamically, so the DOM
-      // checkboxes are the stable handle). Leaves the "scrape grid" debug
-      // overlay untouched. If any cuisine is on, the click turns all off;
-      // otherwise it turns all on.
-      function __toggleAllCuisines() {
-        var labels = document.querySelectorAll(
-          '.leaflet-control-layers-overlays label');
-        var boxes = [];
-        labels.forEach(function (l) {
-          if (l.textContent.trim() === 'scrape grid') return;
-          var cb = l.querySelector('input[type=checkbox]');
-          if (cb) boxes.push(cb);
-        });
-        if (!boxes.length) return;
-        var anyOn = boxes.some(function (b) { return b.checked; });
-        boxes.forEach(function (b) { if (b.checked === anyOn) b.click(); });
-      }
+      // Inject a "Toggle all" button at the top of the LayerControl's overlay
+      // list (top-right), right where the per-cuisine checkboxes live. The
+      // control renders after this element, so poll until it exists. Folium
+      // names its layer vars dynamically, so we drive the DOM checkboxes: if
+      // any cuisine is on, turn all off; otherwise all on. The "scrape grid"
+      // debug overlay is left alone.
+      (function attachToggleAll() {
+        var overlays = document.querySelector('.leaflet-control-layers-overlays');
+        if (!overlays) { setTimeout(attachToggleAll, 150); return; }
+        if (document.getElementById('__toggle_all_btn')) return;
+        var btn = document.createElement('button');
+        btn.id = '__toggle_all_btn';
+        btn.type = 'button';
+        btn.textContent = 'Toggle all';
+        btn.style.cssText = 'width:100%; margin:2px 0 6px; padding:3px 6px;' +
+          'font-size:12px; cursor:pointer; border:1px solid #888;' +
+          'border-radius:3px; background:#f4f4f4;';
+        btn.onclick = function () {
+          var boxes = [];
+          overlays.querySelectorAll('label').forEach(function (l) {
+            if (l.textContent.trim() === 'scrape grid') return;
+            var cb = l.querySelector('input[type=checkbox]');
+            if (cb) boxes.push(cb);
+          });
+          if (!boxes.length) return;
+          var anyOn = boxes.some(function (b) { return b.checked; });
+          boxes.forEach(function (b) { if (b.checked === anyOn) b.click(); });
+        };
+        overlays.insertBefore(btn, overlays.firstChild);
+      })();
     </script>
     """
 
