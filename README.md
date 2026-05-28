@@ -139,7 +139,7 @@ the generated PNGs.
 Multi-city:
 
 ```bash
-uv run python munich_grid_scrape.py --city berlin --grid 10 --max-calls 700   # 13 km default box
+uv run python munich_grid_scrape.py --city berlin --max-calls 700   # 13 km box, 10x10 grid (city defaults)
 uv run python munich_grid_scrape.py --center 48.137,11.576 --side 8000 --grid 8
 ```
 

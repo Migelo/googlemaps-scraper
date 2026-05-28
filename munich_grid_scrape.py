@@ -72,6 +72,13 @@ CITY_SIDE = {
     "berlin": 13000.0,
 }
 
+# Per-city default grid (tiles per side); falls back to N when unlisted. Chosen
+# to keep seed cells ~1.3 km regardless of box size (berlin 13 km / 10 = 1.3 km,
+# matching Munich's 5 km / 4).
+CITY_GRID = {
+    "berlin": 10,
+}
+
 
 def cell_radius(edge_m):
     """Search radius that covers a square cell of the given edge: its half-diagonal."""
@@ -402,8 +409,9 @@ def parse_args():
     p.add_argument("--side", type=float, default=None,
                    help=f"bounding-box side length in meters (default {int(L)}; "
                         f"some cities default wider, e.g. berlin {int(CITY_SIDE['berlin'])})")
-    p.add_argument("--grid", type=int, default=N,
-                   help=f"tiles per side (default {N})")
+    p.add_argument("--grid", type=int, default=None,
+                   help=f"tiles per side (default {N}; some cities default finer, "
+                        f"e.g. berlin {CITY_GRID['berlin']})")
     p.add_argument("--csv", default=None,
                    help="CSV output file (default depends on --city)")
     p.add_argument("--coverage-db", default=None,
@@ -427,9 +435,11 @@ def parse_args():
         args.center_lat, args.center_lon = DEFAULT_CENTER_LAT, DEFAULT_CENTER_LON
         slug = "munich"
 
-    # Default box side from the city (Berlin is wider); manual --side wins.
+    # Default box side and grid from the city; manual --side/--grid win.
     if args.side is None:
         args.side = CITY_SIDE.get(slug, L)
+    if args.grid is None:
+        args.grid = CITY_GRID.get(slug, N)
 
     # Default output paths from the slug. munich keeps its legacy CSV name so the
     # existing dataset is picked up automatically; the coverage file is the new
