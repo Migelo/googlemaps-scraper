@@ -18,10 +18,14 @@ API's 20-result cap subdivide into four children of half the edge and
 re-query, up to `--max-depth`. The map shows 1,623 places, colored by
 average rating.
 
-Resume is built in. `{city}_scanned_tiles.json` records fully-scanned tile
-hashes; `{city}_restaurants.csv` holds the dedup'd places. The CSV is
-written before the scanned-db (atomic tmp + `os.replace`), so a crash never
-marks a tile complete without its places on disk.
+Resume is built in and grid-independent. `{city}_coverage.json` records the
+fully-scanned area as a union of square cells (in a local flat-meters frame
+anchored at a stored reference point); `{city}_restaurants.csv` holds the
+dedup'd places. Before querying a cell, the scraper skips it if its square is
+already inside the covered region — so a later run with a *different*
+center/box/grid reuses any overlapping ground instead of re-querying it. The
+CSV is written before the coverage file (atomic tmp + `os.replace`), so a
+crash never marks an area complete without its places on disk.
 
 ---
 
@@ -163,11 +167,11 @@ scan_coverage.py          # coverage PNG (first image)
 ```
 
 Generated artifacts (gitignored: `*_grid.json`, `*_restaurants.csv`,
-`*_scanned_tiles.json`, `*.html`):
+`*_coverage.json`, `*.html`):
 
 ```
 {city}_grid.json          # dry-run preview of the seed grid
 {city}_restaurants.csv    # scraped data (resume input + output)
-{city}_scanned_tiles.json # tile-hash index for resume
+{city}_coverage.json      # grid-independent covered-area index for resume
 munich_map.html           # interactive Folium map
 ```

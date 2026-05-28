@@ -25,6 +25,9 @@ import sys
 import argparse
 
 import requests
+from shapely.geometry import box
+from shapely.ops import unary_union
+from shapely.prepared import prep
 
 
 class CallBudgetExceeded(Exception):
@@ -43,6 +46,8 @@ MAX_PER_CALL = 20            # API hard cap per nearby search
 SLEEP_BETWEEN = 0.2          # politeness / rate-limit spacing in seconds
 MAX_DEPTH = 4                # recursion cap: a tile splits at most this many times
 SPLIT_AT = MAX_PER_CALL      # a tile returning >= this many results subdivides
+COVERAGE_EPS_M = 0.5         # shrink the containment test box by this many meters to
+                             # absorb float seams at shared cell boundaries
 
 # Meters-per-degree latitude is ~constant (Earth's circumference / 360).
 M_PER_DEG_LAT = 111_320.0
@@ -65,6 +70,81 @@ CITIES = {
 def cell_radius(edge_m):
     """Search radius that covers a square cell of the given edge: its half-diagonal."""
     return (edge_m * math.sqrt(2)) / 2.0
+
+
+class Coverage:
+    """Continuous record of which ground has been fully scanned.
+
+    Coverage is the union of the SQUARE cells that were fully scanned (a query
+    that returned < SPLIT_AT results enumerated everything inside its circle,
+    which contains its square). Because each search circle has radius =
+    cell_radius(edge) = edge*sqrt(2)/2 > edge/2, adjacent cells' circles overlap
+    across shared edges, so a union of squares has no coverage gaps; crediting a
+    full square never over-claims (square subset of the enumerated circle).
+
+    Cells are projected into a local equirectangular frame anchored at a fixed
+    reference (lat0, lon0) using a single longitude scale m_per_deg_lon(lat0),
+    so that cells from runs with *different* grids/centers land in the same frame
+    and a new cell can be tested for containment in prior coverage. This is what
+    makes resume grid-independent.
+    """
+
+    def __init__(self, lat0, lon0):
+        self.lat0 = lat0
+        self.lon0 = lon0
+        self._mlon = m_per_deg_lon(lat0)   # fixed longitude scale for the frame
+        self.cells = []                    # list of (lat, lon, edge_m)
+        self._geom = None                  # cached shapely union of cell boxes
+        self._prepared = None              # prepared(_geom) for fast covers()
+        self._dirty = False                # union stale w.r.t. self.cells
+
+    def _cell_box(self, lat, lon, edge_m):
+        cx = (lon - self.lon0) * self._mlon
+        cy = (lat - self.lat0) * M_PER_DEG_LAT
+        h = edge_m / 2.0
+        return box(cx - h, cy - h, cx + h, cy + h)
+
+    def _rebuild(self):
+        boxes = [self._cell_box(*c) for c in self.cells]
+        geom = unary_union(boxes) if boxes else None
+        # Repair any invalid union (GEOS can emit self-touching rings for
+        # certain float coordinates); buffer(0) cleans it. Keeps covers()
+        # from raising a topology exception downstream.
+        if geom is not None and not geom.is_valid:
+            geom = geom.buffer(0)
+        self._geom = geom
+        self._prepared = prep(geom) if geom is not None else None
+        self._dirty = False
+
+    def is_covered(self, lat, lon, edge_m):
+        """True if this cell's square is already inside the covered region.
+
+        Any GEOS/shapely error degrades to False (treat as not covered) so a
+        geometry hiccup costs at most one redundant query, never a crashed scrape.
+        """
+        try:
+            if self._dirty:
+                self._rebuild()
+            if self._prepared is None:
+                return False
+            # Shrink the test box so containment requires a small margin, dodging
+            # float seams where unioned boxes meet. Never shrink stored cells.
+            test = self._cell_box(lat, lon, edge_m).buffer(-COVERAGE_EPS_M)
+            if test.is_empty:
+                return False
+            return self._prepared.covers(test)
+        except Exception as e:  # GEOS topology errors are rare but must not crash
+            print(f"  (coverage check failed: {e}; treating cell as not covered)")
+            self._prepared = None
+            self._dirty = True
+            return False
+
+    def add(self, lat, lon, edge_m):
+        self.cells.append((lat, lon, edge_m))
+        self._dirty = True
+
+    def __len__(self):
+        return len(self.cells)
 
 
 def build_grid(center_lat, center_lon, side_m, n):
@@ -144,31 +224,37 @@ def search_tile(lat, lon, radius, api_key):
     return resp.json().get("places", [])
 
 
-def tile_hash(lat, lon, edge_m):
-    """Stable identifier for a tile, rounded to dodge float drift across runs."""
-    return f"{lat:.6f}:{lon:.6f}:{edge_m:.1f}"
+def load_coverage(path, default_lat0, default_lon0):
+    """Return a Coverage from path, or an empty one at the caller's default ref.
 
-
-def load_scanned(path):
-    """Return the set of scanned-tile hashes from path, or empty if absent/corrupt."""
+    When the file exists, the Coverage is anchored at the FILE's stored ref, so
+    this run's new cells project into the same frame as prior runs (the basis
+    for grid-independent reuse). The run's own center is used as the reference
+    only when no coverage file exists yet.
+    """
     if not os.path.exists(path):
-        return set()
+        return Coverage(default_lat0, default_lon0)
     try:
         with open(path) as f:
             data = json.load(f)
         if not isinstance(data, dict):
             raise ValueError(f"expected JSON object at top level, got {type(data).__name__}")
-        return set(data.get("tiles", []))
-    except (json.JSONDecodeError, ValueError, OSError, AttributeError) as e:
+        ref = data["ref"]
+        cov = Coverage(float(ref[0]), float(ref[1]))
+        for lat, lon, edge in data.get("cells", []):
+            cov.add(float(lat), float(lon), float(edge))
+        return cov
+    except (json.JSONDecodeError, ValueError, OSError, AttributeError,
+            KeyError, TypeError, IndexError) as e:
         print(f"  (could not read {path}: {e}; starting fresh)")
-        return set()
+        return Coverage(default_lat0, default_lon0)
 
 
-def save_scanned(path, scanned):
-    """Atomically persist the scanned-tile set."""
+def save_coverage(path, cov):
+    """Atomically persist the covered region as a ref point + list of cells."""
     tmp = f"{path}.tmp"
     with open(tmp, "w") as f:
-        json.dump({"tiles": sorted(scanned)}, f, indent=2)
+        json.dump({"ref": [cov.lat0, cov.lon0], "cells": cov.cells}, f, indent=2)
     os.replace(tmp, path)
 
 
@@ -218,7 +304,7 @@ def ingest(places, seen):
             }
 
 
-def harvest(lat, lon, edge_m, api_key, seen, stats, scanned,
+def harvest(lat, lon, edge_m, api_key, seen, stats, coverage,
             depth=0, label="root", max_calls=None, max_depth=MAX_DEPTH):
     """Query one cell; if it saturates the result cap, subdivide and recurse.
 
@@ -227,13 +313,14 @@ def harvest(lat, lon, edge_m, api_key, seen, stats, scanned,
     a saturated node whose four children are all fully scanned. False otherwise
     (HTTP error, saturated-at-max-depth, or any descendant failed).
 
-    The scanned set is consulted before each call: if the tile's hash is in it,
-    the call is skipped (its data is assumed already in `seen` from a prior run).
+    `coverage` is consulted before each call: if the cell's square already lies
+    inside the covered region, the call is skipped (its data is assumed already
+    in `seen` from a prior run). A fully-scanned cell is added to `coverage`;
+    nothing is added on a False path, so coverage never runs ahead of the data.
 
     max_calls and max_depth behave as before.
     """
-    h = tile_hash(lat, lon, edge_m)
-    if h in scanned:
+    if coverage.is_covered(lat, lon, edge_m):
         stats["skipped"] += 1
         return True
 
@@ -258,12 +345,12 @@ def harvest(lat, lon, edge_m, api_key, seen, stats, scanned,
               f"-> subdividing")
         children_ok = True
         for k, (clat, clon, cedge) in enumerate(subdivide(lat, lon, edge_m)):
-            ok = harvest(clat, clon, cedge, api_key, seen, stats, scanned,
+            ok = harvest(clat, clon, cedge, api_key, seen, stats, coverage,
                          depth + 1, label=f"{label}.{k}",
                          max_calls=max_calls, max_depth=max_depth)
             children_ok = children_ok and ok
         if children_ok:
-            scanned.add(h)
+            coverage.add(lat, lon, edge_m)
             return True
         return False
 
@@ -274,7 +361,7 @@ def harvest(lat, lon, edge_m, api_key, seen, stats, scanned,
     print(f"  [{label}] {len(places)} results, {len(seen)} unique so far{note}")
     if saturated:
         return False
-    scanned.add(h)
+    coverage.add(lat, lon, edge_m)
     return True
 
 
@@ -302,8 +389,8 @@ def parse_args():
                    help=f"adaptive-mesh subdivision depth (default {MAX_DEPTH}; "
                         f"0 disables refinement)")
     p.add_argument("--city", choices=sorted(CITIES.keys()), default=None,
-                   help="preset city center; also defaults --csv and --scanned-db "
-                        "to {city}_restaurants.csv / {city}_scanned_tiles.json")
+                   help="preset city center; also defaults --csv and --coverage-db "
+                        "to {city}_restaurants.csv / {city}_coverage.json")
     p.add_argument("--center", default=None,
                    help='manual center as "LAT,LON" (overrides --city)')
     p.add_argument("--side", type=float, default=L,
@@ -312,10 +399,10 @@ def parse_args():
                    help=f"tiles per side (default {N})")
     p.add_argument("--csv", default=None,
                    help="CSV output file (default depends on --city)")
-    p.add_argument("--scanned-db", default=None,
-                   help="JSON file tracking scanned tile hashes (default depends on --city)")
+    p.add_argument("--coverage-db", default=None,
+                   help="JSON file tracking the fully-scanned area (default depends on --city)")
     p.add_argument("--no-resume", action="store_true",
-                   help="ignore existing CSV/scanned-db and start fresh")
+                   help="ignore existing CSV/coverage-db and start fresh")
     args = p.parse_args()
 
     # Resolve center: --center > --city > default Munich.
@@ -333,14 +420,13 @@ def parse_args():
         args.center_lat, args.center_lon = DEFAULT_CENTER_LAT, DEFAULT_CENTER_LON
         slug = "munich"
 
-    # Default output paths from the slug. munich keeps its legacy filenames so
-    # the existing CSV is picked up automatically.
+    # Default output paths from the slug. munich keeps its legacy CSV name so the
+    # existing dataset is picked up automatically; the coverage file is the new
+    # format and uses the uniform {slug}_coverage.json scheme for every city.
     if args.csv is None:
         args.csv = "munich_restaurants.csv" if slug == "munich" else f"{slug}_restaurants.csv"
-    if args.scanned_db is None:
-        args.scanned_db = (
-            "scanned_tiles.json" if slug == "munich" else f"{slug}_scanned_tiles.json"
-        )
+    if args.coverage_db is None:
+        args.coverage_db = f"{slug}_coverage.json"
     return args
 
 
@@ -395,24 +481,25 @@ def main():
         return
 
     out_csv = args.csv
-    scanned_db = args.scanned_db
+    coverage_db = args.coverage_db
     seen = {} if args.no_resume else load_csv(out_csv)
-    scanned = set() if args.no_resume else load_scanned(scanned_db)
-    if seen or scanned:
+    coverage = (Coverage(args.center_lat, args.center_lon) if args.no_resume
+                else load_coverage(coverage_db, args.center_lat, args.center_lon))
+    if seen or len(coverage):
         print(f"Resume: {len(seen)} known places in {out_csv}, "
-              f"{len(scanned)} fully-scanned tiles in {scanned_db}\n")
-    # Consistency check: scanned-db without a matching CSV means the next
-    # scrape will skip those tiles and produce empty/incomplete output.
-    if scanned and not seen:
-        print(f"WARNING: {scanned_db} marks {len(scanned)} tiles fully scanned, "
-              f"but {out_csv} has no places. Those tiles will be SKIPPED with no "
-              f"data. Pass --no-resume to ignore the scanned-db, or restore the CSV.\n")
+              f"{len(coverage)} covered cells in {coverage_db}\n")
+    # Consistency check: a covered region with no matching CSV means the next
+    # scrape will skip that area and produce empty/incomplete output.
+    if len(coverage) and not seen:
+        print(f"WARNING: {coverage_db} marks {len(coverage)} cells covered, "
+              f"but {out_csv} has no places. That area will be SKIPPED with no "
+              f"data. Pass --no-resume to ignore the coverage, or restore the CSV.\n")
 
     stats = {"calls": 0, "raw": 0, "capped_leaves": 0, "skipped": 0}
     aborted = False
     try:
         for i, (lat, lon, edge) in enumerate(tiles):
-            harvest(lat, lon, edge, api_key, seen, stats, scanned,
+            harvest(lat, lon, edge, api_key, seen, stats, coverage,
                     depth=0, label=f"t{i}", max_calls=args.max_calls,
                     max_depth=args.max_depth)
     except CallBudgetExceeded as e:
@@ -420,11 +507,11 @@ def main():
         print(f"\nBudget cap of {args.max_calls} calls reached at [{e}]. "
               f"Stopping early and saving partial results.")
     finally:
-        # Order matters: persist places BEFORE marking tiles scanned. If we
-        # saved the scanned marker first and then crashed during the CSV
-        # write, a future run would skip those tiles and lose the places.
+        # Order matters: persist places BEFORE the coverage marker. If we saved
+        # coverage first and then crashed during the CSV write, a future run
+        # would skip that area and lose the places.
         save_csv(out_csv, seen)
-        save_scanned(scanned_db, scanned)
+        save_coverage(coverage_db, coverage)
 
     filtered_count = sum(
         1 for r in seen.values()
@@ -433,19 +520,19 @@ def main():
     print(f"\nTotal API calls this run: {stats['calls']}"
           + (f" (capped at {args.max_calls})" if aborted else ""))
     if stats["skipped"]:
-        print(f"Tiles skipped via {scanned_db}: {stats['skipped']}")
+        print(f"Tiles skipped via coverage: {stats['skipped']}")
     print(f"Raw results across new calls: {stats['raw']}")
     print(f"Unique places after dedup: {len(seen)}")
     print(f"With > {MIN_REVIEWS} reviews: {filtered_count}")
     if aborted:
         print("NOTE: partial scrape; coverage is incomplete. Re-run to resume — "
-              "scanned tiles will be skipped automatically.")
+              "covered area will be skipped automatically.")
     if stats["capped_leaves"]:
         print(f"WARNING: {stats['capped_leaves']} cell(s) still saturated at "
-              f"max depth; raise --max-depth or --n for full coverage.")
+              f"max depth; raise --max-depth or --grid for full coverage.")
     if seen:
         print(f"Wrote {out_csv} ({len(seen)} rows)")
-    print(f"Wrote {scanned_db} ({len(scanned)} tiles marked fully scanned)")
+    print(f"Wrote {coverage_db} ({len(coverage)} cells in covered region)")
 
 
 if __name__ == "__main__":
