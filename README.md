@@ -44,26 +44,7 @@ beer halls (huge N can't compensate for the lower point estimate).
 
 ---
 
-## 3. Cuisine divergence
-
-![JSD heatmap](munich_jsd_heatmap.png)
-
-Pairwise Jensen-Shannon divergence between each cuisine's rating histogram
-(5 half-star bins), with bootstrap 95% CIs from 1,000 within-cuisine
-resamples. The matrix is symmetric, so only the lower triangle renders.
-
-- 0: identical distributions.
-- ~0.05 and below: indistinguishable at our sample sizes; flagged `(ns)`
-  in the printed summary table when the CI lower bound is ≤ 0.005.
-- 0.1–0.2: clearly different shapes.
-
-A summary table prints with all 55 pairs sorted by JSD descending. JSD
-here is over the cuisine-level histogram of per-place averages; the Places
-API does not expose per-star review counts.
-
----
-
-## 4. Where's the good food?
+## 3. Where's the good food?
 
 ![KDE quality map](munich_kde_map.png)
 
@@ -80,7 +61,7 @@ is two non-negative KDEs (above-mean, below-mean) subtracted.
 
 ---
 
-## 5. Price × cuisine
+## 4. Price × cuisine
 
 ![Price × cuisine contingency](price_cuisine_grid.png)
 
@@ -95,7 +76,7 @@ rating (prior `k=8` toward the global mean).
 
 ---
 
-## 6. Interactive map (HTML)
+## 5. Interactive map (HTML)
 
 `map_html.py` writes `munich_map.html` (~1.3 MB, gitignored). Per restaurant:
 
@@ -140,7 +121,6 @@ uv run python munich_grid_scrape.py --max-calls 700         # scrape with budget
 
 # Analyses (all free, all read the CSV):
 uv run python rating_2d_hist.py
-uv run python divergence_pipeline.py
 uv run python kde_quality_map.py
 uv run python price_cuisine_grid.py
 uv run python outliers.py
@@ -171,7 +151,7 @@ lands around 500–700 calls.
 
 ```
 munich_grid_scrape.py     # scraper (multi-city CLI, atomic resume)
-divergence_pipeline.py    # JSD heatmap + bootstrap CIs + summary table
+cuisine.py                # shared cuisine classification + MIN_REVIEWS
 rating_2d_hist.py         # 2D histogram + 3 top-10 rankings
 outliers.py               # cuisine-conditioned z-scores
 map_html.py               # Folium interactive map

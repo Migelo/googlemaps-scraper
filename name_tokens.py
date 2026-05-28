@@ -26,7 +26,7 @@ import numpy as np
 from sklearn.linear_model import Ridge
 from prettytable import PrettyTable
 
-from divergence_pipeline import classify, MIN_REVIEWS
+from cuisine import classify, MIN_REVIEWS
 
 MIN_FREQ = 10        # token must appear in at least this many names
 RIDGE_ALPHA = 1.0    # L2 penalty

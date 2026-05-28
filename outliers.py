@@ -24,7 +24,7 @@ import csv
 import numpy as np
 from prettytable import PrettyTable
 
-from divergence_pipeline import classify, MIN_REVIEWS
+from cuisine import classify, MIN_REVIEWS
 
 MIN_COHORT = 8   # minimum restaurants per cuisine to compute meaningful stats
 TOP_N = 5        # rows printed per cuisine per direction

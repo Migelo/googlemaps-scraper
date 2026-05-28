@@ -16,6 +16,7 @@ __pycache__/
 # Scraper / pipeline outputs
 *_grid.json
 *_restaurants.csv
+scanned_tiles.json
 *_scanned_tiles.json
 *.html
 # Exception: the published GitHub Pages copy of the Folium map.

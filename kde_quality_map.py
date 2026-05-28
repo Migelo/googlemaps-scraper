@@ -27,7 +27,7 @@ from scipy.stats import gaussian_kde
 from pyproj import Transformer
 import contextily as cx
 
-from divergence_pipeline import MIN_REVIEWS
+from cuisine import MIN_REVIEWS
 
 # Bounding box in (lat, lon) covering the scraped 5 km Munich box plus padding.
 LAT_LO, LAT_HI = 48.110, 48.165

@@ -27,7 +27,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from divergence_pipeline import classify, MIN_REVIEWS
+from cuisine import classify, MIN_REVIEWS
 
 PRIOR_STRENGTH = 8     # equivalent reviews of pull toward the global mean
 PRICE_ORDER = ["INEXPENSIVE", "MODERATE", "EXPENSIVE", "VERY_EXPENSIVE", "(missing)"]

@@ -22,7 +22,7 @@ import html
 
 import folium
 
-from divergence_pipeline import classify, MIN_REVIEWS
+from cuisine import classify, MIN_REVIEWS
 
 CENTER_LAT = 48.1370339      # Marienplatz
 CENTER_LON = 11.5758134

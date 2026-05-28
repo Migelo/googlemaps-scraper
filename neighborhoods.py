@@ -27,7 +27,7 @@ from prettytable import PrettyTable
 from pyproj import Transformer
 from sklearn.cluster import DBSCAN
 
-from divergence_pipeline import classify, MIN_REVIEWS
+from cuisine import classify, MIN_REVIEWS
 
 # UTM zone 32N covers Munich; using a projected CRS gives DBSCAN real meters.
 to_utm = Transformer.from_crs("EPSG:4326", "EPSG:32632", always_xy=True)
