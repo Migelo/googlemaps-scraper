@@ -82,13 +82,18 @@ rating (prior `k=8` toward the global mean).
 
 ## 5. Interactive map (HTML)
 
-`map_html.py` writes `munich_map.html` (~1.3 MB, gitignored). Per restaurant:
+`map_html.py` writes `munich_map.html` (~3.2 MB, gitignored). Per restaurant:
 
-- Color: red→yellow→green ramp on Bayesian rating, clamped to [4.0, 4.8].
+- Color: Bayesian rating, clamped to [4.0, 4.8], on a selectable colormap.
 - Radius: `log10(reviews)` mapped to [4, 18] px.
-- Hover for tooltip, click for popup.
+- Hover for tooltip, click for popup (tooltips are hidden on touch devices,
+  where a tap would otherwise leave one stuck behind the popup).
 - Layer toggle per cuisine.
-- `prefer_canvas=True` so 1.6k+ markers render as one canvas.
+- Colormap selector in the legend: switch the rating ramp live between
+  red→yellow→green, viridis, magma, and jet. Colors are baked into per-name
+  LUTs (viridis/magma/jet straight from matplotlib); each marker keeps a LUT
+  index, so switching recolors all markers and the legend bar in-browser.
+- `prefer_canvas=True` so 2.1k+ markers render as one canvas.
 
 Tooltip content runs through `html.escape()` plus explicit `` ` `` and `$`
 replacements: Folium emits tooltips inside JS template literals, and one

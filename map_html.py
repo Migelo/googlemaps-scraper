@@ -67,13 +67,12 @@ def add_bayes(rows):
     return m, C
 
 
-def rating_to_color(bayes, lo=4.0, hi=4.8):
-    """Map a Bayesian rating to a HEX color on a red->green ramp.
+N_CMAP = 64               # LUT resolution for the in-browser colormap switcher
+DEFAULT_CMAP = "ryg"      # the original red->yellow->green ramp
 
-    Clamps to [lo, hi] so the full range maps to the saturated edges of the ramp.
-    Below lo: red. Above hi: green. Middle: yellow/orange.
-    """
-    t = max(0.0, min(1.0, (bayes - lo) / (hi - lo)))
+
+def _ramp_color(t):
+    """Original red->yellow->green ramp for t in [0, 1] -> HEX."""
     # Red (220, 50, 50) -> Yellow (240, 200, 60) -> Green (40, 160, 70)
     if t < 0.5:
         u = t * 2
@@ -86,6 +85,37 @@ def rating_to_color(bayes, lo=4.0, hi=4.8):
         g = int(200 + (160 - 200) * u)
         b = int(60 + (70 - 60) * u)
     return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def bayes_to_t(bayes, lo=4.0, hi=4.8):
+    """Normalize a Bayesian rating into [0, 1], clamped to [lo, hi].
+
+    Below lo maps to the cold end of the ramp, above hi to the warm end.
+    """
+    return max(0.0, min(1.0, (bayes - lo) / (hi - lo)))
+
+
+def color_index(t, n=N_CMAP):
+    """Quantize t in [0, 1] to a LUT index in [0, n-1]."""
+    return max(0, min(n - 1, round(t * (n - 1))))
+
+
+def build_colormaps(n=N_CMAP):
+    """Hex-color LUTs for each selectable colormap, keyed by name.
+
+    The custom ramp is sampled from _ramp_color; viridis/magma/jet come straight
+    from matplotlib so the in-browser colors match the standard maps exactly.
+    """
+    import matplotlib
+    luts = {DEFAULT_CMAP: [_ramp_color(i / (n - 1)) for i in range(n)]}
+    for name in ("viridis", "magma", "jet"):
+        cmap = matplotlib.colormaps[name]
+        luts[name] = [
+            "#{:02x}{:02x}{:02x}".format(
+                *(int(round(c * 255)) for c in cmap(i / (n - 1))[:3]))
+            for i in range(n)
+        ]
+    return luts
 
 
 def radius_from_reviews(reviews, lo=4, hi=18):
@@ -112,6 +142,10 @@ def build_map(rows, grid_path=None):
     cuisines = sorted({r["cuisine"] for r in rows})
     groups = {c: folium.FeatureGroup(name=c, show=True) for c in cuisines}
 
+    cmaps = build_colormaps()
+    ryg = cmaps[DEFAULT_CMAP]
+    marker_idx = {}   # "lat,lon" -> LUT index, so JS can recolor on switch
+
     for r in rows:
         # html.escape() handles <, >, &; backticks must also be neutralized
         # because Folium emits tooltips inside JS template literals, and a
@@ -127,10 +161,12 @@ def build_map(rows, grid_path=None):
             f"reviews: {r['reviews']:,}<br>"
             f"price: {safe(r['price'])}"
         )
+        idx = color_index(bayes_to_t(r["bayes"]))
+        marker_idx[f"{r['lat']:.6f},{r['lon']:.6f}"] = idx
         folium.CircleMarker(
             location=[r["lat"], r["lon"]],
             radius=radius_from_reviews(r["reviews"]),
-            color=rating_to_color(r["bayes"]),
+            color=ryg[idx],
             weight=1, fill=True, fill_opacity=0.75,
             # Tooltip = on-hover preview, popup = click-to-pin persistent panel.
             tooltip=folium.Tooltip(tooltip, sticky=True),
@@ -160,6 +196,8 @@ def build_map(rows, grid_path=None):
 
     folium.LayerControl(collapsed=False).add_to(m)
     m.get_root().html.add_child(folium.Element(_legend_html()))
+    m.get_root().html.add_child(folium.Element(
+        _colormap_script(m.get_name(), cmaps, marker_idx, N_CMAP)))
     # On touch devices (no hover) a tap opens both the sticky tooltip and the
     # popup; with no mouseout the tooltip lingers behind the popup. The popup
     # carries identical content, so hide tooltips where hover is unavailable.
@@ -169,10 +207,70 @@ def build_map(rows, grid_path=None):
     return m
 
 
+def _colormap_script(map_name, cmaps, idx_map, n):
+    """JS for the legend's colormap <select>: recolor every marker + the legend bar.
+
+    Markers live inside per-cuisine FeatureGroups; they're collected once at load
+    (all groups start visible) into a persistent list, so switching a colormap
+    recolors even cuisines that are currently toggled off. Each marker keeps its
+    LUT index; switching just re-reads the chosen LUT at that index.
+
+    Placeholders are substituted via str.replace to avoid escaping the many JS
+    braces through str.format/f-strings.
+    """
+    tmpl = """
+    <script>
+    window.__cmap = (function () {
+      var N = __N__, CMAPS = __CMAPS__, IDX = __IDX__, markers = [];
+      function keyFor(ll) { return ll.lat.toFixed(6) + ',' + ll.lng.toFixed(6); }
+      (function collect() {
+        // Reference the map global via window[] (not a bare identifier): this
+        // script is emitted before Folium's map-init script, so the name isn't
+        // declared yet — a bare reference would throw instead of being caught
+        // by the guard below, and we'd never retry.
+        var m = window["__MAP__"];
+        if (!m) { setTimeout(collect, 200); return; }
+        var found = [];
+        m.eachLayer(function (layer) {
+          if (layer.eachLayer) layer.eachLayer(function (child) {
+            if (child.setStyle && child.getLatLng) {
+              var i = IDX[keyFor(child.getLatLng())];
+              if (i !== undefined) found.push([child, i]);
+            }
+          });
+        });
+        if (!found.length) { setTimeout(collect, 200); return; }
+        markers = found;
+      })();
+      function apply(name) {
+        var lut = CMAPS[name];
+        if (!lut) return;
+        for (var j = 0; j < markers.length; j++) {
+          var c = lut[markers[j][1]];
+          markers[j][0].setStyle({ color: c, fillColor: c });
+        }
+        var bar = document.getElementById('__cmap_bar');
+        if (bar) {
+          var stops = [];
+          for (var k = 0; k <= 6; k++) stops.push(lut[Math.round(k / 6 * (N - 1))]);
+          bar.style.background = 'linear-gradient(to right,' + stops.join(',') + ')';
+        }
+      }
+      return { apply: apply };
+    })();
+    </script>
+    """
+    return (tmpl
+            .replace("__N__", str(n))
+            .replace("__CMAPS__", json.dumps(cmaps))
+            .replace("__IDX__", json.dumps(idx_map))
+            .replace("__MAP__", map_name))
+
+
 def _legend_html():
     """Floating legend in the bottom-left explaining marker color and size.
 
-    The color stops mirror rating_to_color()'s ramp; the SVG circle radii
+    The color stops mirror _ramp_color()'s ramp; the SVG circle radii
     mirror radius_from_reviews() at log10 = 2, 3, 4, 5 so the swatches match
     actual marker sizes on the map.
     """
@@ -182,10 +280,20 @@ def _legend_html():
                 box-shadow: 0 1px 4px rgba(0,0,0,0.25);
                 font-family: -apple-system, sans-serif; font-size: 12px;
                 color: #222;">
-      <div style="font-weight: 600; margin-bottom: 4px;">Bayesian rating</div>
+      <div style="display: flex; align-items: center; justify-content: space-between;
+                  gap: 10px; margin-bottom: 4px;">
+        <span style="font-weight: 600;">Bayesian rating</span>
+        <select id="__cmap_select" onchange="window.__cmap.apply(this.value)"
+                style="font-size: 11px; padding: 1px 2px;">
+          <option value="ryg">red→yellow→green</option>
+          <option value="viridis">viridis</option>
+          <option value="magma">magma</option>
+          <option value="jet">jet</option>
+        </select>
+      </div>
       <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 12px;">
         <span style="font-variant-numeric: tabular-nums;">4.0</span>
-        <div style="width: 150px; height: 12px;
+        <div id="__cmap_bar" style="width: 150px; height: 12px;
                     background: linear-gradient(to right,
                         rgb(220, 50, 50),
                         rgb(240, 200, 60),
