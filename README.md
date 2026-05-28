@@ -120,6 +120,7 @@ uv sync
 export GOOGLE_MAPS_API_KEY="..."           # Places API (New) enabled
 
 uv run python munich_grid_scrape.py --dry-run               # preview + estimate
+uv run python grid_preview.py munich_grid.json              # render the seed grid on a map
 uv run python munich_grid_scrape.py --max-calls 700         # scrape with budget cap
 
 # Analyses (all free, all read the CSV):
@@ -138,7 +139,7 @@ the generated PNGs.
 Multi-city:
 
 ```bash
-uv run python munich_grid_scrape.py --city berlin --max-calls 700
+uv run python munich_grid_scrape.py --city berlin --grid 10 --max-calls 700   # 13 km default box
 uv run python munich_grid_scrape.py --center 48.137,11.576 --side 8000 --grid 8
 ```
 
@@ -163,6 +164,7 @@ map_html.py               # Folium interactive map
 kde_quality_map.py        # geographic quality heatmap
 price_cuisine_grid.py     # price × cuisine contingency
 scan_coverage.py          # coverage PNG (first image)
+grid_preview.py           # render a dry-run seed grid on a basemap (pre-scrape)
 Makefile                  # regenerate all plots + HTML map: `make`
 ```
 

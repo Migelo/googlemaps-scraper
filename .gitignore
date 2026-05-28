@@ -15,6 +15,7 @@ __pycache__/
 
 # Scraper / pipeline outputs
 *_grid.json
+*_grid_preview.png
 *_restaurants.csv
 *_coverage.json
 scanned_tiles.json
