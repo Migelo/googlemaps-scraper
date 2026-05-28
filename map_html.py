@@ -160,6 +160,12 @@ def build_map(rows, grid_path=None):
 
     folium.LayerControl(collapsed=False).add_to(m)
     m.get_root().html.add_child(folium.Element(_legend_html()))
+    # On touch devices (no hover) a tap opens both the sticky tooltip and the
+    # popup; with no mouseout the tooltip lingers behind the popup. The popup
+    # carries identical content, so hide tooltips where hover is unavailable.
+    m.get_root().header.add_child(folium.Element(
+        "<style>@media (hover: none) { .leaflet-tooltip { display: none !important; } }</style>"
+    ))
     return m
 
 
