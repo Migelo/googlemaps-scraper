@@ -94,6 +94,9 @@ rating (prior `k=8` toward the global mean).
   LUTs (viridis/magma/jet straight from matplotlib); each marker keeps a LUT
   index, so switching recolors all markers and the legend bar in-browser.
 - `prefer_canvas=True` so 2.1k+ markers render as one canvas.
+- City-agnostic: the initial view is the data centroid and `fit_bounds()`
+  frames the actual extent, so the same script works for any `*_restaurants.csv`
+  (e.g. `uv run python map_html.py berlin_restaurants.csv berlin_map.html`).
 
 Tooltip content runs through `html.escape()` plus explicit `` ` `` and `$`
 replacements: Folium emits tooltips inside JS template literals, and one

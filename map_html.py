@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """
-Interactive Folium map of Munich restaurants.
+Interactive Folium map of scraped restaurants.
 
 Each restaurant is a circle marker, colored by Bayesian-weighted rating and
 sized by log(reviews). Tooltip shows name / cuisine / rating / reviews / price.
-Layer control toggles per cuisine. The adaptive scrape grid (munich_grid.json)
-is overlaid as a hidden layer for debugging coverage.
+Layer control toggles per cuisine. The matching `*_grid.json` (derived from
+the input CSV name) is overlaid as a hidden layer for debugging coverage.
+
+City-agnostic: the initial view auto-fits whatever data is in the CSV, so
+the same script works for any `{city}_restaurants.csv`.
 
 Output: a single self-contained HTML file (default munich_map.html).
 
@@ -23,10 +26,6 @@ import html
 import folium
 
 from cuisine import classify, MIN_REVIEWS
-
-CENTER_LAT = 48.1370339      # Marienplatz
-CENTER_LON = 11.5758134
-ZOOM_START = 13
 
 
 def load(csv_path):
@@ -131,8 +130,12 @@ def build_map(rows, grid_path=None):
     # — pages can appear blank or hang. Canvas keeps it interactive at this size.
     # tiles=None + a control=False TileLayer adds the basemap without listing it
     # as a (non-removable) radio entry in the LayerControl.
+    # Initial location uses the data centroid; fit_bounds at the end pins the
+    # actual view to the data bbox, so the map opens framed regardless of city.
+    lats = [r["lat"] for r in rows]
+    lons = [r["lon"] for r in rows]
     m = folium.Map(
-        location=[CENTER_LAT, CENTER_LON], zoom_start=ZOOM_START,
+        location=[sum(lats) / len(lats), sum(lons) / len(lons)],
         tiles=None, control_scale=True,
         prefer_canvas=True,
     )
@@ -204,6 +207,7 @@ def build_map(rows, grid_path=None):
     m.get_root().header.add_child(folium.Element(
         "<style>@media (hover: none) { .leaflet-tooltip { display: none !important; } }</style>"
     ))
+    m.fit_bounds([[min(lats), min(lons)], [max(lats), max(lons)]])
     return m
 
 
@@ -365,7 +369,9 @@ def _legend_html():
 def main():
     in_csv = sys.argv[1] if len(sys.argv) > 1 else "munich_restaurants.csv"
     out_html = sys.argv[2] if len(sys.argv) > 2 else "munich_map.html"
-    grid_json = "munich_grid.json"
+    # Match the scraper's per-city naming: {city}_restaurants.csv -> {city}_grid.json.
+    grid_json = (in_csv.replace("_restaurants.csv", "_grid.json")
+                 if in_csv.endswith("_restaurants.csv") else "scrape_grid.json")
 
     rows = load(in_csv)
     if not rows:
