@@ -135,9 +135,9 @@ uv run python scan_coverage.py
 uv run python map_html.py
 ```
 
-Or regenerate every plot + the HTML map + the `docs/` Pages copy in one shot
-with `make`. `make tables` runs the print-only analyses; `make clean` removes
-the generated PNGs.
+Or regenerate every Munich plot + the HTML map + the `docs/` Pages copy in
+one shot with `make`. `make tables` runs the print-only analyses; `make
+clean` removes the generated PNGs.
 
 Multi-city:
 
@@ -145,6 +145,21 @@ Multi-city:
 uv run python munich_grid_scrape.py --city berlin --max-calls 700   # 13 km box, 10x10 grid (city defaults)
 uv run python munich_grid_scrape.py --center 48.137,11.576 --side 8000 --grid 8
 ```
+
+Every analysis script takes the CSV (and output path) as positional
+arguments, so the Munich recipes repeat verbatim for Berlin:
+
+```bash
+uv run python rating_2d_hist.py     berlin_restaurants.csv berlin_rating_2d_hist.png
+uv run python kde_quality_map.py    berlin_restaurants.csv berlin_kde_map.png
+uv run python price_cuisine_grid.py berlin_restaurants.csv berlin_price_cuisine_grid.png
+uv run python outliers.py           berlin_restaurants.csv
+uv run python scan_coverage.py      berlin_restaurants.csv berlin_coverage.json berlin_scan_coverage.png
+uv run python map_html.py           berlin_restaurants.csv berlin_map.html
+```
+
+Or, in one shot: `make plots-berlin` (the 4 PNGs + `berlin_map.html`) and
+`make tables-berlin` (the print-only summary).
 
 ---
 
